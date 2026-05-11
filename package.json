@@ -1,0 +1,20 @@
+{
+  "name": "skylead-migration",
+  "version": "1.0.0",
+  "description": "Skylead → Salesrobot migration tool",
+  "main": "server.js",
+  "scripts": {
+    "dev": "concurrently \"node server.js\" \"cd client && npm run dev\"",
+    "build": "cd client && npm install && npm run build",
+    "start": "NODE_ENV=production node server.js",
+    "install:all": "npm install && cd client && npm install"
+  },
+  "dependencies": {
+    "axios": "^1.7.2",
+    "cors": "^2.8.5",
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
