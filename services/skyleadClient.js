@@ -29,28 +29,29 @@ function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
-async function getSeats(apiKey, userId) {
-  // Try the standard accounts endpoint first, fall back to seats endpoint
-  const endpoints = [
-    `/users/${userId}/accounts`,
-    `/users/${userId}/seats`,
-    `/seats`,
-  ];
+async function getMe(apiKey) {
+  const resp = await withRetry(() => client(apiKey).get('/user/me'));
+  return resp.data; // { id, email, fullName, ... }
+}
 
-  let lastErr;
-  for (const endpoint of endpoints) {
-    try {
-      const resp = await withRetry(() => client(apiKey).get(endpoint));
-      const data = resp.data.result;
-      const items = data?.items || data?.seats || data?.accounts || (Array.isArray(data) ? data : null);
-      if (items) return items;
-    } catch (err) {
-      lastErr = err;
-      if (err.response?.status !== 404) throw err;
-      // 404 → try next endpoint
-    }
+async function getSeats(apiKey) {
+  const all = [];
+  let offset = 0;
+  const limit = 50;
+
+  while (true) {
+    const resp = await withRetry(() =>
+      client(apiKey).get('/accounts', {
+        params: { offset, limit, onlyActive: true },
+      })
+    );
+    const items = resp.data.result?.items || [];
+    all.push(...items);
+    if (items.length < limit) break;
+    offset += limit;
   }
-  throw lastErr;
+
+  return all;
 }
 
 async function getCampaigns(apiKey, userId, accountId) {
@@ -140,4 +141,4 @@ function mapStepType(action) {
   return STEP_TYPE_MAP[action?.toLowerCase()] || 'VIEW_PROFILE';
 }
 
-module.exports = { getSeats, getCampaigns, getCampaignDetails, getLeadsForStep, flattenSteps, mapStepType };
+module.exports = { getMe, getSeats, getCampaigns, getCampaignDetails, getLeadsForStep, flattenSteps, mapStepType };

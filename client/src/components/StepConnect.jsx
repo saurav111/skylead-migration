@@ -2,7 +2,6 @@ import { useState } from 'react';
 
 export default function StepConnect({ onDone }) {
   const [skyLeadApiKey, setSkyLeadApiKey] = useState('');
-  const [skyLeadUserId, setSkyLeadUserId] = useState('');
   const [salesrobotApiKey, setSalesrobotApiKey] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -14,12 +13,13 @@ export default function StepConnect({ onDone }) {
       const resp = await fetch('/api/connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ skyLeadApiKey, skyLeadUserId, salesrobotApiKey }),
+        body: JSON.stringify({ skyLeadApiKey, salesrobotApiKey }),
       });
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.error || 'Connection failed');
       onDone({
-        creds: { skyLeadApiKey, skyLeadUserId, salesrobotApiKey },
+        creds: { skyLeadApiKey, skyLeadUserId: String(data.userId), salesrobotApiKey },
+        skyLeadUser: data.skyLeadUser,
         seats: data.seats,
         srAccounts: data.srAccounts,
       });
@@ -30,7 +30,7 @@ export default function StepConnect({ onDone }) {
     }
   }
 
-  const ready = skyLeadApiKey && skyLeadUserId && salesrobotApiKey;
+  const ready = skyLeadApiKey && salesrobotApiKey;
 
   return (
     <div className="card">
@@ -43,7 +43,7 @@ export default function StepConnect({ onDone }) {
         <label>Skylead API Key</label>
         <input
           type="password"
-          placeholder="sk-..."
+          placeholder="Paste your Skylead API key"
           value={skyLeadApiKey}
           onChange={e => setSkyLeadApiKey(e.target.value)}
         />
@@ -51,21 +51,10 @@ export default function StepConnect({ onDone }) {
       </div>
 
       <div className="form-group">
-        <label>Skylead User ID</label>
-        <input
-          type="text"
-          placeholder="12345"
-          value={skyLeadUserId}
-          onChange={e => setSkyLeadUserId(e.target.value)}
-        />
-        <p className="hint">Found in Skylead → Profile → User ID (numeric)</p>
-      </div>
-
-      <div className="form-group">
         <label>Salesrobot API Key</label>
         <input
           type="password"
-          placeholder="sr-..."
+          placeholder="Paste your Salesrobot API key"
           value={salesrobotApiKey}
           onChange={e => setSalesrobotApiKey(e.target.value)}
         />

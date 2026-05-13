@@ -1,33 +1,28 @@
 const express = require('express');
 const router = express.Router();
-const { getSeats, getCampaigns } = require('../services/skyleadClient');
+const { getMe, getSeats, getCampaigns } = require('../services/skyleadClient');
 const { getLinkedinAccounts } = require('../services/salesrobotClient');
 const { runMigration } = require('../services/migrationService');
 
-// In-memory session store (single-instance, no DB needed)
 const sessions = new Map();
 
-// POST /api/connect — validate both API keys and fetch accounts
+// POST /api/connect — validate both keys, auto-fetch userId + seats + SR accounts
 router.post('/connect', async (req, res) => {
-  const { skyLeadApiKey, skyLeadUserId, salesrobotApiKey } = req.body;
+  const { skyLeadApiKey, salesrobotApiKey } = req.body;
 
-  if (!skyLeadApiKey || !skyLeadUserId || !salesrobotApiKey) {
-    return res.status(400).json({ error: 'All three fields are required' });
+  if (!skyLeadApiKey || !salesrobotApiKey) {
+    return res.status(400).json({ error: 'Both API keys are required' });
   }
 
-  let seats, srAccounts;
+  let me, seats, srAccounts;
 
   try {
-    seats = await getSeats(skyLeadApiKey, skyLeadUserId);
+    [me, seats] = await Promise.all([getMe(skyLeadApiKey), getSeats(skyLeadApiKey)]);
   } catch (err) {
     const status = err.response?.status;
-    const url = err.config?.url || 'Skylead accounts endpoint';
-    console.error('Skylead seats error', status, err.response?.data);
+    console.error('Skylead error', status, err.response?.data);
     if (status === 401 || status === 403) {
       return res.status(400).json({ error: 'Skylead API key is invalid' });
-    }
-    if (status === 404) {
-      return res.status(400).json({ error: `Skylead returned 404 for user ID ${skyLeadUserId}. Check your User ID is correct (numeric, found in Skylead → Settings → Profile).` });
     }
     return res.status(500).json({ error: `Skylead error: ${err.message}` });
   }
@@ -36,14 +31,14 @@ router.post('/connect', async (req, res) => {
     srAccounts = await getLinkedinAccounts(salesrobotApiKey);
   } catch (err) {
     const status = err.response?.status;
-    console.error('Salesrobot accounts error', status, err.response?.data);
+    console.error('Salesrobot error', status, err.response?.data);
     if (status === 401 || status === 403) {
       return res.status(400).json({ error: 'Salesrobot API key is invalid' });
     }
     return res.status(500).json({ error: `Salesrobot error: ${err.message}` });
   }
 
-  res.json({ seats, srAccounts });
+  res.json({ userId: me.id, skyLeadUser: me, seats, srAccounts });
 });
 
 // GET /api/campaigns?skyLeadApiKey=&skyLeadUserId=&accountId=
@@ -72,7 +67,7 @@ router.post('/migrate/start', (req, res) => {
 
   const sessionId = Math.random().toString(36).slice(2) + Date.now().toString(36);
   sessions.set(sessionId, req.body);
-  setTimeout(() => sessions.delete(sessionId), 30 * 60 * 1000); // clean up after 30min
+  setTimeout(() => sessions.delete(sessionId), 30 * 60 * 1000);
 
   res.json({ sessionId });
 });
@@ -89,10 +84,9 @@ router.get('/migrate/stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no'); // important for Render/nginx
+  res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
 
-  // Keep connection alive every 15s
   const heartbeat = setInterval(() => res.write(': heartbeat\n\n'), 15000);
 
   function emit(type, data = {}) {
