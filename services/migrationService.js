@@ -115,14 +115,22 @@ async function migrateCampaign({
   const srCampaignUuid = await createCampaign(
     salesrobotApiKey, salesrobotLinkedinAccountUuid, campaign.name
   );
+  emit('log', { message: `Campaign created: ${srCampaignUuid}` });
 
   if (sequenceStepDTOList.length > 0) {
     emit('log', { message: `Adding ${sequenceStepDTOList.length} sequence step(s)...` });
+    emit('log', { message: `Steps payload: ${JSON.stringify(sequenceStepDTOList)}` });
     await addSequenceSteps(salesrobotApiKey, salesrobotLinkedinAccountUuid, srCampaignUuid, sequenceStepDTOList);
+    emit('log', { message: `Sequence steps saved OK` });
   }
 
-  // Must start then immediately pause so startingStepOrdinal works
-  await startCampaign(salesrobotApiKey, srCampaignUuid, salesrobotLinkedinAccountUuid);
+  // Must start then immediately pause so startingStepOrdinal works on add-leadlist
+  const hasInviteMessage = sequenceStepDTOList.some(
+    s => s.sequenceStepType === 'SEND_CONNECTION_REQUEST' && s.multiVariateMails?.[0]?.body?.trim()
+  );
+  emit('log', { message: `Starting campaign (hasInviteMessage=${hasInviteMessage})...` });
+  await startCampaign(salesrobotApiKey, srCampaignUuid, salesrobotLinkedinAccountUuid, hasInviteMessage);
+  emit('log', { message: `Pausing campaign...` });
   await pauseCampaign(salesrobotApiKey, srCampaignUuid, salesrobotLinkedinAccountUuid);
 
   // Migrate leads per step
@@ -151,9 +159,13 @@ async function migrateCampaign({
     emit('log', { message: `Importing ${valid.length} lead(s) at step ${step.step}...` });
 
     const leadListName = `${campaign.name} - Step ${step.step}`;
+    emit('log', { message: `Creating lead list "${leadListName}"...` });
     const leadListUuid = await createLeadListFromCSV(salesrobotApiKey, leadListName, valid);
+    emit('log', { message: `Lead list created: ${leadListUuid}` });
 
+    emit('log', { message: `Adding lead list to campaign at ordinal ${step.step}...` });
     await addLeadListToCampaign(salesrobotApiKey, srCampaignUuid, leadListUuid, step.step);
+    emit('log', { message: `Lead list attached OK` });
 
     summary.leadsImported += valid.length;
     emit('leads_imported', { count: valid.length, step: step.step, campaignName: campaign.name });

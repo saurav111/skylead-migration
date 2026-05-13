@@ -24,9 +24,24 @@ function client(apiKey) {
   });
 }
 
+function extractError(err) {
+  const body = err.response?.data;
+  const bodyStr = body ? (typeof body === 'string' ? body : JSON.stringify(body)) : '';
+  return bodyStr
+    ? `HTTP ${err.response?.status}: ${bodyStr}`
+    : err.message;
+}
+
 async function req(fn) {
   await throttle();
-  return fn();
+  try {
+    return await fn();
+  } catch (err) {
+    const msg = extractError(err);
+    const enhanced = new Error(msg);
+    enhanced.response = err.response;
+    throw enhanced;
+  }
 }
 
 async function getLinkedinAccounts(apiKey) {
@@ -69,10 +84,10 @@ async function addSequenceSteps(apiKey, linkedinAccountUuid, campaignUuid, seque
   );
 }
 
-async function startCampaign(apiKey, campaignUuid, linkedinAccountUuid) {
+async function startCampaign(apiKey, campaignUuid, linkedinAccountUuid, hasInviteMessage = false) {
   await req(() =>
     client(apiKey).post(
-      `/start?campaignUuid=${campaignUuid}&hasInviteMessage=false&linkedinAccountUuid=${linkedinAccountUuid}`
+      `/start?campaignUuid=${campaignUuid}&hasInviteMessage=${hasInviteMessage}&linkedinAccountUuid=${linkedinAccountUuid}`
     )
   );
 }
