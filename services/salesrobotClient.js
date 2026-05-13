@@ -67,9 +67,16 @@ async function getLinkedinAccounts(apiKey) {
 
 async function createCampaign(apiKey, linkedinAccountUuid, name) {
   const resp = await req(() =>
-    client(apiKey).post(`/campaign?linkedinAccountUuid=${linkedinAccountUuid}`, { name })
+    client(apiKey).post(`/campaign?linkedinAccountUuid=${linkedinAccountUuid}`, {
+      campaignName: name,
+      campaignType: 'ADVANCED',
+      campaignFamily: 'LINKEDIN',
+      linkedinAccountUuid,
+    })
   );
-  return resp.data?.data?.uuid || resp.data?.data?.campaignUuid;
+  // Response is a plain UUID string in data
+  const d = resp.data?.data;
+  return typeof d === 'string' ? d : d?.uuid || d?.campaignUuid;
 }
 
 async function addSequenceSteps(apiKey, linkedinAccountUuid, campaignUuid, sequenceStepDTOList) {
