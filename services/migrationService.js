@@ -98,18 +98,24 @@ async function migrateCampaign({
     emit('log', { message: `"${campaign.name}" has no steps — creating empty campaign` });
   }
 
+  const MESSAGE_TYPES = new Set(['SEND_MESSAGE', 'SEND_CONNECTION_REQUEST', 'SEND_MESSAGE_IN_MAIL', 'SEND_EMAIL']);
+
   // Build Salesrobot sequence steps
-  const sequenceStepDTOList = steps.map((s, idx) => ({
-    stepOrdinal: idx + 1,
-    sequenceStepType: mapStepType(s.action),
-    hoursDelay: idx === 0 ? 0 : Math.round((s.doAfterPreviousStep || 0) / 3_600_000),
-    multiVariateMails: [
-      {
+  const sequenceStepDTOList = steps.map((s, idx) => {
+    const sequenceStepType = mapStepType(s.action);
+    const step = {
+      stepOrdinal: idx + 1,
+      sequenceStepType,
+      hoursDelay: idx === 0 ? 0 : Math.round((s.doAfterPreviousStep || 0) / 3_600_000),
+    };
+    if (MESSAGE_TYPES.has(sequenceStepType)) {
+      step.multiVariateMails = [{
         body: s.data?.message || '',
         ...(s.data?.subject ? { subject: s.data.subject } : {}),
-      },
-    ],
-  }));
+      }];
+    }
+    return step;
+  });
 
   emit('log', { message: `Creating campaign "${campaign.name}" in Salesrobot...` });
   const srCampaignUuid = await createCampaign(
