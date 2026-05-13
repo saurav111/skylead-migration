@@ -15,20 +15,35 @@ router.post('/connect', async (req, res) => {
     return res.status(400).json({ error: 'All three fields are required' });
   }
 
-  try {
-    const [seats, srAccounts] = await Promise.all([
-      getSeats(skyLeadApiKey, skyLeadUserId),
-      getLinkedinAccounts(salesrobotApiKey),
-    ]);
+  let seats, srAccounts;
 
-    res.json({ seats, srAccounts });
+  try {
+    seats = await getSeats(skyLeadApiKey, skyLeadUserId);
   } catch (err) {
     const status = err.response?.status;
+    const url = err.config?.url || 'Skylead accounts endpoint';
+    console.error('Skylead seats error', status, err.response?.data);
     if (status === 401 || status === 403) {
-      return res.status(400).json({ error: 'Invalid API key — check your credentials and try again' });
+      return res.status(400).json({ error: 'Skylead API key is invalid' });
     }
-    res.status(500).json({ error: err.message });
+    if (status === 404) {
+      return res.status(400).json({ error: `Skylead returned 404 for user ID ${skyLeadUserId}. Check your User ID is correct (numeric, found in Skylead → Settings → Profile).` });
+    }
+    return res.status(500).json({ error: `Skylead error: ${err.message}` });
   }
+
+  try {
+    srAccounts = await getLinkedinAccounts(salesrobotApiKey);
+  } catch (err) {
+    const status = err.response?.status;
+    console.error('Salesrobot accounts error', status, err.response?.data);
+    if (status === 401 || status === 403) {
+      return res.status(400).json({ error: 'Salesrobot API key is invalid' });
+    }
+    return res.status(500).json({ error: `Salesrobot error: ${err.message}` });
+  }
+
+  res.json({ seats, srAccounts });
 });
 
 // GET /api/campaigns?skyLeadApiKey=&skyLeadUserId=&accountId=

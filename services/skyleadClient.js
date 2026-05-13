@@ -30,10 +30,27 @@ function sleep(ms) {
 }
 
 async function getSeats(apiKey, userId) {
-  const resp = await withRetry(() =>
-    client(apiKey).get(`/users/${userId}/accounts`)
-  );
-  return resp.data.result?.items || resp.data.result || [];
+  // Try the standard accounts endpoint first, fall back to seats endpoint
+  const endpoints = [
+    `/users/${userId}/accounts`,
+    `/users/${userId}/seats`,
+    `/seats`,
+  ];
+
+  let lastErr;
+  for (const endpoint of endpoints) {
+    try {
+      const resp = await withRetry(() => client(apiKey).get(endpoint));
+      const data = resp.data.result;
+      const items = data?.items || data?.seats || data?.accounts || (Array.isArray(data) ? data : null);
+      if (items) return items;
+    } catch (err) {
+      lastErr = err;
+      if (err.response?.status !== 404) throw err;
+      // 404 → try next endpoint
+    }
+  }
+  throw lastErr;
 }
 
 async function getCampaigns(apiKey, userId, accountId) {
