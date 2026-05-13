@@ -72,13 +72,19 @@ router.post('/migrate/stream', async (req, res) => {
   const heartbeat = setInterval(() => res.write(': heartbeat\n\n'), 15000);
 
   function emit(type, data = {}) {
+    const isError = type === 'error' || type === 'campaign_error';
+    const logLine = data.message || data.name || type;
+    if (isError) console.error(`[migration] ${type}:`, logLine);
+    else console.log(`[migration] ${type}:`, logLine);
     res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
   }
 
   try {
     const summary = await runMigration(req.body, emit);
+    console.log('[migration] complete:', JSON.stringify(summary));
     emit('complete', { summary });
   } catch (err) {
+    console.error('[migration] fatal:', err.message);
     emit('error', { message: err.message });
   } finally {
     clearInterval(heartbeat);
