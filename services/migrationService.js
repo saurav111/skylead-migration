@@ -6,6 +6,8 @@ const {
   mapStepType,
 } = require('./skyleadClient');
 
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
 const {
   createCampaign,
   addSequenceSteps,
@@ -152,17 +154,24 @@ async function migrateCampaign({
     if (valid.length > 0) leadsByOrdinal.set(stepOrdinal, { step, valid });
   }
 
-  // --- Phase 2: Seed step-1 leads directly so the campaign can be started ---
-  // Salesrobot requires at least one lead to start a campaign.
-  // Direct /add-from-csv always places leads at step 1 (no startingStepOrdinal).
-  const step1Entry = leadsByOrdinal.get(1);
-  if (step1Entry) {
-    emit('log', { message: `Seeding ${step1Entry.valid.length} step-1 lead(s) directly to enable start...` });
+  // --- Phase 2: Seed ANY available leads so the campaign can be started ---
+  // Salesrobot requires at least one lead to start. Use step-1 leads if available,
+  // otherwise fall back to the first step that has any valid leads.
+  // Direct /add-from-csv places leads at step 1; the leadlist phase (step 4) will
+  // re-add them at the correct ordinal, which Salesrobot will honour.
+  const seedEntry = leadsByOrdinal.get(1)
+    || [...leadsByOrdinal.values()][0]; // first available step
+
+  if (seedEntry) {
+    emit('log', { message: `Seeding ${seedEntry.valid.length} lead(s) directly to enable start (from step ${seedEntry.step.step})...` });
     await addLeadsDirectToCampaign(
-      salesrobotApiKey, salesrobotLinkedinAccountUuid, srCampaignUuid, step1Entry.valid
+      salesrobotApiKey, salesrobotLinkedinAccountUuid, srCampaignUuid, seedEntry.valid
     );
-    summary.leadsImported += step1Entry.valid.length;
-    emit('leads_imported', { count: step1Entry.valid.length, step: 1, campaignName: campaign.name });
+    // Give Salesrobot a moment to process the import before we try to start
+    await sleep(3000);
+    emit('log', { message: `Seed complete.` });
+  } else {
+    emit('log', { message: `No valid leads found in any step — attempting start anyway.` });
   }
 
   // --- Phase 3: Start → Pause (so startingStepOrdinal works for steps 2+) ---
@@ -173,10 +182,12 @@ async function migrateCampaign({
   await startCampaign(salesrobotApiKey, srCampaignUuid, salesrobotLinkedinAccountUuid, hasInviteMessage);
   emit('log', { message: `Pausing campaign...` });
   await pauseCampaign(salesrobotApiKey, srCampaignUuid, salesrobotLinkedinAccountUuid);
+  await sleep(2000);
 
-  // --- Phase 4: Add steps 2+ via lead lists with startingStepOrdinal ---
+  // --- Phase 4: Add all steps via lead lists with startingStepOrdinal ---
+  // Includes step 1 if it had leads (Salesrobot will move the seed leads to the
+  // correct ordinal when the same profiles appear in the leadlist).
   for (const [stepOrdinal, { step, valid }] of leadsByOrdinal) {
-    if (stepOrdinal === 1) continue; // already seeded directly above
 
     emit('log', { message: `Importing ${valid.length} lead(s) at step ${stepOrdinal} via lead list...` });
 
