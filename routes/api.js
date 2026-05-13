@@ -4,8 +4,6 @@ const { getMe, getSeats, getCampaigns } = require('../services/skyleadClient');
 const { getLinkedinAccounts } = require('../services/salesrobotClient');
 const { runMigration } = require('../services/migrationService');
 
-const sessions = new Map();
-
 // POST /api/connect — validate both keys, auto-fetch userId + seats + SR accounts
 router.post('/connect', async (req, res) => {
   const { skyLeadApiKey, salesrobotApiKey } = req.body;
@@ -57,28 +55,12 @@ router.get('/campaigns', async (req, res) => {
   }
 });
 
-// POST /api/migrate/start — store config, return sessionId
-router.post('/migrate/start', (req, res) => {
+// POST /api/migrate/stream — SSE migration stream (config in body, no session needed)
+router.post('/migrate/stream', async (req, res) => {
   const { skyLeadApiKey, skyLeadUserId, salesrobotApiKey, accountMappings, selectedCampaignIds } = req.body;
 
   if (!skyLeadApiKey || !skyLeadUserId || !salesrobotApiKey || !accountMappings?.length || !selectedCampaignIds?.length) {
     return res.status(400).json({ error: 'Incomplete migration config' });
-  }
-
-  const sessionId = Math.random().toString(36).slice(2) + Date.now().toString(36);
-  sessions.set(sessionId, req.body);
-  setTimeout(() => sessions.delete(sessionId), 30 * 60 * 1000);
-
-  res.json({ sessionId });
-});
-
-// GET /api/migrate/stream?sessionId=xxx — SSE migration stream
-router.get('/migrate/stream', async (req, res) => {
-  const { sessionId } = req.query;
-  const config = sessions.get(sessionId);
-
-  if (!config) {
-    return res.status(404).json({ error: 'Session not found or expired' });
   }
 
   res.setHeader('Content-Type', 'text/event-stream');
@@ -94,13 +76,12 @@ router.get('/migrate/stream', async (req, res) => {
   }
 
   try {
-    const summary = await runMigration(config, emit);
+    const summary = await runMigration(req.body, emit);
     emit('complete', { summary });
   } catch (err) {
     emit('error', { message: err.message });
   } finally {
     clearInterval(heartbeat);
-    sessions.delete(sessionId);
     res.end();
   }
 });

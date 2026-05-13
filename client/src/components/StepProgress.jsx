@@ -5,6 +5,7 @@ export default function StepProgress({ credentials, accountMappings, selectedCam
   const [done, setDone] = useState(false);
   const [error, setError] = useState('');
   const logRef = useRef(null);
+  const doneRef = useRef(false);
 
   useEffect(() => {
     startMigration();
@@ -16,71 +17,88 @@ export default function StepProgress({ credentials, accountMappings, selectedCam
     }
   }, [logs]);
 
-  async function startMigration() {
-    // 1. Create session
-    const resp = await fetch('/api/migrate/start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ...credentials,
-        accountMappings,
-        selectedCampaignIds,
-      }),
-    });
-
-    const { sessionId, error: startError } = await resp.json();
-    if (startError) {
-      setError(startError);
-      return;
-    }
-
-    // 2. Stream SSE
-    const es = new EventSource(`/api/migrate/stream?sessionId=${sessionId}`);
-
-    es.onmessage = (e) => {
-      const event = JSON.parse(e.data);
-
-      switch (event.type) {
-        case 'log':
-          addLog(event.message, 'log');
-          break;
-        case 'campaign_start':
-          addLog(`▶ Migrating: ${event.name}`, 'campaign');
-          break;
-        case 'campaign_done':
-          addLog(`✓ Done: ${event.name}`, 'done');
-          break;
-        case 'campaign_error':
-          addLog(`✗ Failed: ${event.name} — ${event.message}`, 'error');
-          break;
-        case 'leads_imported':
-          addLog(`  ↳ ${event.count} lead(s) imported at step ${event.step}`, 'log');
-          break;
-        case 'error':
-          addLog(`ERROR: ${event.message}`, 'error');
-          break;
-        case 'complete':
-          addLog('Migration complete!', 'done');
-          setDone(true);
-          es.close();
-          setTimeout(() => onDone(event.summary), 800);
-          break;
-        default:
-          break;
-      }
-    };
-
-    es.onerror = () => {
-      if (!done) {
-        addLog('Connection lost. Migration may still be running on the server.', 'error');
-        setError('Connection lost');
-        es.close();
-      }
-    };
-  }
-
   function addLog(message, type = 'log') {
     setLogs(prev => [...prev, { message, type, id: Date.now() + Math.random() }]);
+  }
+
+  function handleEvent(event) {
+    switch (event.type) {
+      case 'log':
+        addLog(event.message, 'log');
+        break;
+      case 'campaign_start':
+        addLog(`▶ Migrating: ${event.name}`, 'campaign');
+        break;
+      case 'campaign_done':
+        addLog(`✓ Done: ${event.name}`, 'done');
+        break;
+      case 'campaign_error':
+        addLog(`✗ Failed: ${event.name} — ${event.message}`, 'error');
+        break;
+      case 'leads_imported':
+        addLog(`  ↳ ${event.count} lead(s) imported at step ${event.step}`, 'log');
+        break;
+      case 'error':
+        addLog(`ERROR: ${event.message}`, 'error');
+        break;
+      case 'complete':
+        addLog('Migration complete!', 'done');
+        doneRef.current = true;
+        setDone(true);
+        setTimeout(() => onDone(event.summary), 800);
+        break;
+      default:
+        break;
+    }
+  }
+
+  async function startMigration() {
+    try {
+      const resp = await fetch('/api/migrate/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...credentials, accountMappings, selectedCampaignIds }),
+      });
+
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        setError(data.error || `Server error ${resp.status}`);
+        return;
+      }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done: streamDone, value } = await reader.read();
+        if (streamDone) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        // SSE lines look like: "data: {...}\n\n"
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop(); // keep incomplete last chunk
+
+        for (const part of parts) {
+          const line = part.trim();
+          if (!line || line.startsWith(':')) continue; // heartbeat or empty
+          if (line.startsWith('data: ')) {
+            try {
+              const event = JSON.parse(line.slice(6));
+              handleEvent(event);
+            } catch {
+              // ignore malformed line
+            }
+          }
+        }
+      }
+    } catch (err) {
+      if (!doneRef.current) {
+        addLog(`Connection error: ${err.message}`, 'error');
+        setError('Connection lost');
+      }
+    }
   }
 
   return (
