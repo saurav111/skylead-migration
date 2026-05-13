@@ -126,6 +126,18 @@ async function addLeadListToCampaign(apiKey, campaignUuid, leadListUuid, startin
   );
 }
 
+// Adds leads directly to a campaign (no startingStepOrdinal — they land at step 1).
+// Used to seed the campaign with at least one lead so it can be started.
+async function addLeadsDirectToCampaign(apiKey, linkedinAccountUuid, campaignUuid, leads) {
+  const prospectData = buildProspectData(leads);
+  await req(() =>
+    client(apiKey).post(
+      `/add-from-csv?linkedinAccountUuid=${linkedinAccountUuid}&campaignUuid=${campaignUuid}`,
+      { prospectData, dontAddIfInAnotherLinkedinAccountForMyUser: false }
+    )
+  );
+}
+
 // Converts flat lead array to Salesrobot's columnar prospectData format
 function buildProspectData(leads) {
   const fields = [
@@ -157,4 +169,5 @@ module.exports = {
   pauseCampaign,
   createLeadListFromCSV,
   addLeadListToCampaign,
+  addLeadsDirectToCampaign,
 };

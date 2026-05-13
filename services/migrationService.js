@@ -13,6 +13,7 @@ const {
   pauseCampaign,
   createLeadListFromCSV,
   addLeadListToCampaign,
+  addLeadsDirectToCampaign,
 } = require('./salesrobotClient');
 
 async function runMigration(config, emit) {
@@ -123,7 +124,48 @@ async function migrateCampaign({
     emit('log', { message: `Sequence steps saved OK` });
   }
 
-  // Must start then immediately pause so startingStepOrdinal works on add-leadlist
+  // --- Phase 1: Fetch leads for all steps from Skylead ---
+  // Skylead step objects have no lead-count field, so we fetch every step
+  // and skip if the API returns nothing.
+  emit('log', { message: `Fetching leads for all ${steps.length} step(s)...` });
+
+  // stepOrdinal (1-based) → { step, valid leads[] }
+  const leadsByOrdinal = new Map();
+
+  for (const [idx, step] of steps.entries()) {
+    const stepOrdinal = idx + 1;
+    emit('log', { message: `  Fetching leads at step ${stepOrdinal} (Skylead step ID ${step.id})...` });
+
+    const leads = await getLeadsForStep(
+      skyLeadApiKey, skyLeadUserId, skyLeadAccountId, campaign.id, step.id
+    );
+
+    const noUrl   = leads.filter(l => !l.linkedinUrl);
+    const replied = leads.filter(l => l.linkedinUrl && l.leadStatusId === 4);
+    const valid   = leads.filter(l => l.linkedinUrl && l.leadStatusId !== 4);
+
+    summary.leadsSkippedNoUrl    += noUrl.length;
+    summary.leadsSkippedReplied  += replied.length;
+
+    emit('log', { message: `  Step ${stepOrdinal}: ${valid.length} valid, ${replied.length} replied, ${noUrl.length} no URL` });
+
+    if (valid.length > 0) leadsByOrdinal.set(stepOrdinal, { step, valid });
+  }
+
+  // --- Phase 2: Seed step-1 leads directly so the campaign can be started ---
+  // Salesrobot requires at least one lead to start a campaign.
+  // Direct /add-from-csv always places leads at step 1 (no startingStepOrdinal).
+  const step1Entry = leadsByOrdinal.get(1);
+  if (step1Entry) {
+    emit('log', { message: `Seeding ${step1Entry.valid.length} step-1 lead(s) directly to enable start...` });
+    await addLeadsDirectToCampaign(
+      salesrobotApiKey, salesrobotLinkedinAccountUuid, srCampaignUuid, step1Entry.valid
+    );
+    summary.leadsImported += step1Entry.valid.length;
+    emit('leads_imported', { count: step1Entry.valid.length, step: 1, campaignName: campaign.name });
+  }
+
+  // --- Phase 3: Start → Pause (so startingStepOrdinal works for steps 2+) ---
   const hasInviteMessage = sequenceStepDTOList.some(
     s => s.sequenceStepType === 'SEND_CONNECTION_REQUEST' && s.multiVariateMails?.[0]?.body?.trim()
   );
@@ -132,42 +174,21 @@ async function migrateCampaign({
   emit('log', { message: `Pausing campaign...` });
   await pauseCampaign(salesrobotApiKey, srCampaignUuid, salesrobotLinkedinAccountUuid);
 
-  // Migrate leads per step
-  const stepsWithLeads = steps.filter(s => s.numberOfLeadsInStep > 0);
-  emit('log', { message: `${stepsWithLeads.length} step(s) have leads to migrate` });
+  // --- Phase 4: Add steps 2+ via lead lists with startingStepOrdinal ---
+  for (const [stepOrdinal, { step, valid }] of leadsByOrdinal) {
+    if (stepOrdinal === 1) continue; // already seeded directly above
 
-  for (const step of stepsWithLeads) {
-    emit('log', { message: `Fetching leads at step ${step.step} (${step.numberOfLeadsInStep} expected)...` });
+    emit('log', { message: `Importing ${valid.length} lead(s) at step ${stepOrdinal} via lead list...` });
 
-    const leads = await getLeadsForStep(
-      skyLeadApiKey, skyLeadUserId, skyLeadAccountId, campaign.id, step.id
-    );
-
-    const noUrl = leads.filter(l => !l.linkedinUrl);
-    const replied = leads.filter(l => l.linkedinUrl && l.leadStatusId === 4);
-    const valid = leads.filter(l => l.linkedinUrl && l.leadStatusId !== 4);
-
-    summary.leadsSkippedNoUrl += noUrl.length;
-    summary.leadsSkippedReplied += replied.length;
-
-    if (valid.length === 0) {
-      emit('log', { message: `No importable leads at step ${step.step} (${replied.length} replied, ${noUrl.length} no URL)` });
-      continue;
-    }
-
-    emit('log', { message: `Importing ${valid.length} lead(s) at step ${step.step}...` });
-
-    const leadListName = `${campaign.name} - Step ${step.step}`;
-    emit('log', { message: `Creating lead list "${leadListName}"...` });
+    const leadListName = `${campaign.name} - Step ${stepOrdinal}`;
     const leadListUuid = await createLeadListFromCSV(salesrobotApiKey, leadListName, valid);
     emit('log', { message: `Lead list created: ${leadListUuid}` });
 
-    emit('log', { message: `Adding lead list to campaign at ordinal ${step.step}...` });
-    await addLeadListToCampaign(salesrobotApiKey, srCampaignUuid, leadListUuid, step.step);
-    emit('log', { message: `Lead list attached OK` });
+    await addLeadListToCampaign(salesrobotApiKey, srCampaignUuid, leadListUuid, stepOrdinal);
+    emit('log', { message: `Lead list attached at step ${stepOrdinal} OK` });
 
     summary.leadsImported += valid.length;
-    emit('leads_imported', { count: valid.length, step: step.step, campaignName: campaign.name });
+    emit('leads_imported', { count: valid.length, step: stepOrdinal, campaignName: campaign.name });
   }
 }
 
