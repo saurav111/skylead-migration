@@ -11,19 +11,19 @@ export default function StepAccountMapping({ seats, srAccounts, onBack, onDone }
   }
 
   function handleNext() {
-    const unmapped = mappings.filter(m => !m.salesrobotLinkedinAccountUuid);
-    if (unmapped.length > 0) {
-      setError(`Please map all ${unmapped.length} Skylead seat(s) to a Salesrobot LinkedIn account.`);
+    const mapped = mappings.filter(m => m.salesrobotLinkedinAccountUuid);
+    if (mapped.length === 0) {
+      setError('Map at least one Skylead seat to a Salesrobot account to continue.');
       return;
     }
-    onDone(mappings);
+    onDone(mapped);
   }
 
   return (
     <div className="card">
       <h2>Map LinkedIn accounts</h2>
       <p className="subtitle">
-        Match each Skylead seat to the same LinkedIn account in Salesrobot.
+        Match Skylead seats to their LinkedIn account in Salesrobot. Unmapped seats will be skipped.
         The LinkedIn account must already be connected in Salesrobot.
       </p>
 
