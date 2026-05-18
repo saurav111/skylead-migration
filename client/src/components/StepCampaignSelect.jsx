@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react';
 export default function StepCampaignSelect({ credentials, accountMappings, seats, onBack, onDone }) {
   const [campaigns, setCampaigns] = useState([]);
   const [selected, setSelected] = useState(new Set());
+  const [includeReplied, setIncludeReplied] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -63,7 +64,7 @@ export default function StepCampaignSelect({ credentials, accountMappings, seats
 
   function handleNext() {
     if (selected.size === 0) return;
-    onDone({ campaigns, selectedIds: [...selected] });
+    onDone({ campaigns, selectedIds: [...selected], includeReplied });
   }
 
   if (loading) {
@@ -111,6 +112,21 @@ export default function StepCampaignSelect({ credentials, accountMappings, seats
           );
         })}
       </div>
+
+      <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, margin: '16px 0', cursor: 'pointer', fontSize: 14 }}>
+        <input
+          type="checkbox"
+          checked={includeReplied}
+          onChange={e => setIncludeReplied(e.target.checked)}
+          style={{ marginTop: 2, flexShrink: 0 }}
+        />
+        <span>
+          <strong>Include replied leads</strong>
+          <span style={{ display: 'block', color: '#6b7280', fontSize: 13, marginTop: 2 }}>
+            Leads who already replied in Skylead will be added back into the campaign at their current step.
+          </span>
+        </span>
+      </label>
 
       <div className="btn-row">
         <button className="btn btn-secondary" onClick={onBack}>← Back</button>

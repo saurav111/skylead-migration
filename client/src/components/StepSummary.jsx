@@ -26,10 +26,12 @@ export default function StepSummary({ summary, onReset }) {
           <div className="num">{leadsImported}</div>
           <div className="label">Leads imported at correct step</div>
         </div>
-        <div className="stat-card yellow">
-          <div className="num">{leadsSkippedReplied}</div>
-          <div className="label">Leads skipped (already replied)</div>
-        </div>
+        {leadsSkippedReplied > 0 && (
+          <div className="stat-card yellow">
+            <div className="num">{leadsSkippedReplied}</div>
+            <div className="label">Replied leads skipped</div>
+          </div>
+        )}
         <div className="stat-card yellow">
           <div className="num">{leadsSkippedNoUrl}</div>
           <div className="label">Leads skipped (no LinkedIn URL)</div>

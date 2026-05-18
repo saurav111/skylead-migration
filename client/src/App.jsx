@@ -15,6 +15,7 @@ export default function App() {
   const [accountMappings, setAccountMappings] = useState([]);
   const [allCampaigns, setAllCampaigns] = useState([]);
   const [selectedCampaignIds, setSelectedCampaignIds] = useState([]);
+  const [includeReplied, setIncludeReplied] = useState(false);
   const [summary, setSummary] = useState(null);
 
   function goTo(s) { setStep(s); }
@@ -57,9 +58,10 @@ export default function App() {
           accountMappings={accountMappings}
           seats={seats}
           onBack={() => goTo(1)}
-          onDone={({ campaigns, selectedIds }) => {
+          onDone={({ campaigns, selectedIds, includeReplied: ir }) => {
             setAllCampaigns(campaigns);
             setSelectedCampaignIds(selectedIds);
+            setIncludeReplied(ir);
             goTo(3);
           }}
         />
@@ -70,6 +72,7 @@ export default function App() {
           credentials={credentials}
           accountMappings={accountMappings}
           selectedCampaignIds={selectedCampaignIds}
+          includeReplied={includeReplied}
           onDone={(s) => { setSummary(s); goTo(4); }}
         />
       )}
@@ -85,6 +88,7 @@ export default function App() {
             setAccountMappings([]);
             setAllCampaigns([]);
             setSelectedCampaignIds([]);
+            setIncludeReplied(false);
             setSummary(null);
           }}
         />

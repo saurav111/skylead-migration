@@ -25,6 +25,7 @@ async function runMigration(config, emit) {
     salesrobotApiKey,
     accountMappings,
     selectedCampaignIds,
+    includeReplied = false,
   } = config;
 
   const summary = {
@@ -66,6 +67,7 @@ async function runMigration(config, emit) {
           salesrobotApiKey,
           salesrobotLinkedinAccountUuid,
           campaign,
+          includeReplied,
           summary,
           emit,
         });
@@ -86,7 +88,7 @@ async function runMigration(config, emit) {
 async function migrateCampaign({
   skyLeadApiKey, skyLeadUserId, skyLeadAccountId,
   salesrobotApiKey, salesrobotLinkedinAccountUuid,
-  campaign, summary, emit,
+  campaign, includeReplied, summary, emit,
 }) {
   emit('log', { message: `Fetching details for "${campaign.name}"...` });
 
@@ -144,12 +146,12 @@ async function migrateCampaign({
 
     const noUrl   = leads.filter(l => !l.linkedinUrl);
     const replied = leads.filter(l => l.linkedinUrl && l.leadStatusId === 4);
-    const valid   = leads.filter(l => l.linkedinUrl && l.leadStatusId !== 4);
+    const valid   = leads.filter(l => l.linkedinUrl && (l.leadStatusId !== 4 || includeReplied));
 
     summary.leadsSkippedNoUrl    += noUrl.length;
-    summary.leadsSkippedReplied  += replied.length;
+    if (!includeReplied) summary.leadsSkippedReplied += replied.length;
 
-    emit('log', { message: `  Step ${stepOrdinal}: ${valid.length} valid, ${replied.length} replied, ${noUrl.length} no URL` });
+    emit('log', { message: `  Step ${stepOrdinal}: ${valid.length} valid${includeReplied ? ' (incl. replied)' : ''}, ${replied.length} replied, ${noUrl.length} no URL` });
 
     if (valid.length > 0) leadsByOrdinal.set(stepOrdinal, { step, valid });
   }
