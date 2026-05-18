@@ -144,9 +144,32 @@ async function migrateCampaign({
       skyLeadApiKey, skyLeadUserId, skyLeadAccountId, campaign.id, step.id
     );
 
-    const noUrl   = leads.filter(l => !l.linkedinUrl);
-    const replied = leads.filter(l => l.linkedinUrl && l.leadStatusId === 4);
-    const valid   = leads.filter(l => l.linkedinUrl && (l.leadStatusId !== 4 || includeReplied));
+    // Resolve LinkedIn URL: use linkedinUrl if set, otherwise fall back to
+    // the profileIdentifiers entry with identityTypeId=1 (LinkedIn handle).
+    // Skylead populates linkedinUrl lazily and it can be an empty string even
+    // for real LinkedIn contacts.
+    function resolveUrl(lead) {
+      if (lead.linkedinUrl) return lead.linkedinUrl;
+      const liId = (lead.profileIdentifiers || []).find(p => p.identityTypeId === 1);
+      if (liId?.identifier) {
+        return liId.identifier.startsWith('http')
+          ? liId.identifier
+          : `https://www.linkedin.com/in/${liId.identifier}`;
+      }
+      return '';
+    }
+
+    const leadsWithUrl = leads.map(l => ({ ...l, _resolvedUrl: resolveUrl(l) }));
+    const noUrl   = leadsWithUrl.filter(l => !l._resolvedUrl);
+    const replied = leadsWithUrl.filter(l => l._resolvedUrl && l.leadStatusId === 4);
+    const valid   = leadsWithUrl.filter(l => l._resolvedUrl && (l.leadStatusId !== 4 || includeReplied));
+
+    // Log sample of no-URL leads so we can diagnose if the field name ever changes
+    if (noUrl.length > 0) {
+      const sample = noUrl[0];
+      emit('log', { message: `  [debug] no-URL lead sample keys: ${Object.keys(sample).join(', ')}` });
+      emit('log', { message: `  [debug] linkedinUrl="${sample.linkedinUrl}" profileIdentifiers=${JSON.stringify(sample.profileIdentifiers?.slice(0,2))}` });
+    }
 
     summary.leadsSkippedNoUrl    += noUrl.length;
     if (!includeReplied) summary.leadsSkippedReplied += replied.length;

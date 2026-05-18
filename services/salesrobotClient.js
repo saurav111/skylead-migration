@@ -141,7 +141,7 @@ async function addLeadsDirectToCampaign(apiKey, linkedinAccountUuid, campaignUui
 // Converts flat lead array to Salesrobot's columnar prospectData format
 function buildProspectData(leads) {
   const fields = [
-    { name: 'profileUrl',      pick: l => l.linkedinUrl || '' },
+    { name: 'profileUrl',      pick: l => l._resolvedUrl || l.linkedinUrl || '' },
     { name: 'firstName',       pick: l => l.firstName || '' },
     { name: 'lastName',        pick: l => l.lastName || '' },
     { name: 'fullName',        pick: l => l.allFieldsData?.full_name || l.fullName || '' },
