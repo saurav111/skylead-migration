@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react';
 export default function StepCampaignSelect({ credentials, accountMappings, seats, onBack, onDone }) {
   const [campaigns, setCampaigns] = useState([]);
   const [selected, setSelected] = useState(new Set());
-  const [includeReplied, setIncludeReplied] = useState(false);
+  const [includeReplied, setIncludeReplied] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 

@@ -25,7 +25,7 @@ async function runMigration(config, emit) {
     salesrobotApiKey,
     accountMappings,
     selectedCampaignIds,
-    includeReplied = false,
+    includeReplied = true,
   } = config;
 
   const summary = {
