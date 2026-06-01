@@ -35,6 +35,7 @@ async function runMigration(config, emit) {
     leadsSkippedReplied: 0,
     branchesDropped: 0,
     errors: [],
+    skippedLeads: [], // leads with no resolvable LinkedIn URL
   };
 
   for (const mapping of accountMappings) {
@@ -171,8 +172,23 @@ async function migrateCampaign({
       emit('log', { message: `  [debug] linkedinUrl="${sample.linkedinUrl}" profileIdentifiers=${JSON.stringify(sample.profileIdentifiers?.slice(0,2))}` });
     }
 
-    summary.leadsSkippedNoUrl    += noUrl.length;
+    summary.leadsSkippedNoUrl += noUrl.length;
     if (!includeReplied) summary.leadsSkippedReplied += replied.length;
+
+    // Collect skipped leads with just enough fields for a CSV download
+    for (const l of noUrl) {
+      summary.skippedLeads.push({
+        campaignName: campaign.name,
+        firstName: l.firstName || '',
+        lastName: l.lastName || '',
+        fullName: l.fullName || l.allFieldsData?.full_name || '',
+        email: l.personalEmail || l.businessEmail || l.allFieldsData?.email || '',
+        company: l.company || l.allFieldsData?.currentCompany || '',
+        occupation: l.occupation || '',
+        linkedinUrl: l.linkedinUrl || '',
+        profileIdentifiers: (l.profileIdentifiers || []).map(p => p.identifier).join('; '),
+      });
+    }
 
     emit('log', { message: `  Step ${stepOrdinal}: ${valid.length} valid${includeReplied ? ' (incl. replied)' : ''}, ${replied.length} replied, ${noUrl.length} no URL` });
 

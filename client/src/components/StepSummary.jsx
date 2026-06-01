@@ -1,3 +1,21 @@
+function downloadSkippedCSV(skippedLeads) {
+  const headers = ['Campaign', 'First Name', 'Last Name', 'Full Name', 'Email', 'Company', 'Occupation', 'LinkedIn URL (raw)', 'Profile Identifiers'];
+  const rows = skippedLeads.map(l => [
+    l.campaignName, l.firstName, l.lastName, l.fullName,
+    l.email, l.company, l.occupation, l.linkedinUrl, l.profileIdentifiers,
+  ]);
+  const csv = [headers, ...rows]
+    .map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(','))
+    .join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'skipped-leads.csv';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export default function StepSummary({ summary, onReset }) {
   if (!summary) return null;
 
@@ -8,6 +26,7 @@ export default function StepSummary({ summary, onReset }) {
     leadsSkippedReplied = 0,
     branchesDropped = 0,
     errors = [],
+    skippedLeads = [],
   } = summary;
 
   return (
@@ -32,9 +51,17 @@ export default function StepSummary({ summary, onReset }) {
             <div className="label">Replied leads skipped</div>
           </div>
         )}
-        <div className="stat-card yellow">
+        <div className="stat-card yellow" style={{ position: 'relative' }}>
           <div className="num">{leadsSkippedNoUrl}</div>
           <div className="label">Leads skipped (no LinkedIn URL)</div>
+          {skippedLeads.length > 0 && (
+            <button
+              onClick={() => downloadSkippedCSV(skippedLeads)}
+              style={{ marginTop: 10, fontSize: 12, padding: '4px 10px', cursor: 'pointer', border: '1px solid #d97706', borderRadius: 6, background: 'transparent', color: '#d97706', fontWeight: 600 }}
+            >
+              ↓ Download CSV
+            </button>
+          )}
         </div>
       </div>
 
