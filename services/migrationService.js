@@ -145,19 +145,34 @@ async function migrateCampaign({
       skyLeadApiKey, skyLeadUserId, skyLeadAccountId, campaign.id, step.id
     );
 
-    // Resolve LinkedIn URL: use linkedinUrl if set, otherwise fall back to
-    // the profileIdentifiers entry with identityTypeId=1 (LinkedIn handle).
-    // Skylead populates linkedinUrl lazily and it can be an empty string even
-    // for real LinkedIn contacts.
+    // Resolve the best LinkedIn URL for this lead.
+    // identityTypeId values per Skylead docs:
+    //   1 = BASIC     → linkedin.com/in/
+    //   2 = NAVIGATOR → linkedin.com/sales/people/
+    //   3 = RECRUITER
+    //   4 = EMAIL, 5 = BUSINESS_EMAIL
+    //
+    // Prefer NAVIGATOR (id=2) so Sales Nav leads route to the Sales Nav inbox
+    // in Salesrobot. Fall back to BASIC (id=1), then the raw linkedinUrl field
+    // (which Skylead populates lazily and can be an empty string).
     function resolveUrl(lead) {
-      if (lead.linkedinUrl) return lead.linkedinUrl;
-      const liId = (lead.profileIdentifiers || []).find(p => p.identityTypeId === 1);
-      if (liId?.identifier) {
-        return liId.identifier.startsWith('http')
-          ? liId.identifier
-          : `https://www.linkedin.com/in/${liId.identifier}`;
+      const identifiers = lead.profileIdentifiers || [];
+
+      const navId = identifiers.find(p => p.identityTypeId === 2);
+      if (navId?.identifier) {
+        return navId.identifier.startsWith('http')
+          ? navId.identifier
+          : `https://www.linkedin.com/sales/people/${navId.identifier}`;
       }
-      return '';
+
+      const basicId = identifiers.find(p => p.identityTypeId === 1);
+      if (basicId?.identifier) {
+        return basicId.identifier.startsWith('http')
+          ? basicId.identifier
+          : `https://www.linkedin.com/in/${basicId.identifier}`;
+      }
+
+      return lead.linkedinUrl || '';
     }
 
     const leadsWithUrl = leads.map(l => ({ ...l, _resolvedUrl: resolveUrl(l) }));
