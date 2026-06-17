@@ -1,6 +1,6 @@
 const axios = require('axios');
 
-const BASE = 'https://api.boomtechinc.com/api';
+const BASE = 'https://app.boomtechinc.com/api';
 
 // 250 req/min = one request every 240ms (safety margin under 300/min limit)
 const REQUEST_INTERVAL_MS = 240;
