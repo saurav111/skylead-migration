@@ -238,7 +238,7 @@ async function migrateCampaign({
     s => s.sequenceStepType === 'SEND_CONNECTION_REQUEST' && s.multiVariateMails?.[0]?.body?.trim()
   );
 
-  async function startWithRetry(maxAttempts = 3) {
+  async function startWithRetry(maxAttempts = 5) {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         emit('log', { message: `Starting campaign (attempt ${attempt}/${maxAttempts}, hasInviteMessage=${hasInviteMessage})...` });
