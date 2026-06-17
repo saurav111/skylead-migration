@@ -210,32 +210,54 @@ async function migrateCampaign({
     if (valid.length > 0) leadsByOrdinal.set(stepOrdinal, { step, valid });
   }
 
-  // --- Phase 2: Seed ANY available leads so the campaign can be started ---
-  // Salesrobot requires at least one lead to start. Use step-1 leads if available,
-  // otherwise fall back to the first step that has any valid leads.
-  // Direct /add-from-csv places leads at step 1; the leadlist phase (step 4) will
-  // re-add them at the correct ordinal, which Salesrobot will honour.
+  // --- Phase 2: Seed exactly ONE lead so the campaign can be started ---
+  // Salesrobot requires at least one lead to start. Seeding all leads before
+  // start caused 504 timeouts on large campaigns — the server was still
+  // processing the import when the start request arrived.
+  // We seed only 1 lead here; all leads (including this one) are added at the
+  // correct step ordinal via leadlists in Phase 4.
   const seedEntry = leadsByOrdinal.get(1)
     || [...leadsByOrdinal.values()][0]; // first available step
 
   if (seedEntry) {
-    emit('log', { message: `Seeding ${seedEntry.valid.length} lead(s) directly to enable start (from step ${seedEntry.step.step})...` });
+    const seedLead = seedEntry.valid.slice(0, 1);
+    emit('log', { message: `Seeding 1 lead to enable start (from step ${seedEntry.step.step})...` });
     await addLeadsDirectToCampaign(
-      salesrobotApiKey, salesrobotLinkedinAccountUuid, srCampaignUuid, seedEntry.valid
+      salesrobotApiKey, salesrobotLinkedinAccountUuid, srCampaignUuid, seedLead
     );
-    // Give Salesrobot a moment to process the import before we try to start
     await sleep(3000);
     emit('log', { message: `Seed complete.` });
   } else {
     emit('log', { message: `No valid leads found in any step — attempting start anyway.` });
   }
 
-  // --- Phase 3: Start → Pause (so startingStepOrdinal works for steps 2+) ---
+  // --- Phase 3: Start → Pause with retry on 504/5xx ---
+  // The /start endpoint can be slow on Salesrobot's side; retry up to 3 times
+  // with a 10-second back-off before giving up.
   const hasInviteMessage = sequenceStepDTOList.some(
     s => s.sequenceStepType === 'SEND_CONNECTION_REQUEST' && s.multiVariateMails?.[0]?.body?.trim()
   );
-  emit('log', { message: `Starting campaign (hasInviteMessage=${hasInviteMessage})...` });
-  await startCampaign(salesrobotApiKey, srCampaignUuid, salesrobotLinkedinAccountUuid, hasInviteMessage);
+
+  async function startWithRetry(maxAttempts = 3) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        emit('log', { message: `Starting campaign (attempt ${attempt}/${maxAttempts}, hasInviteMessage=${hasInviteMessage})...` });
+        await startCampaign(salesrobotApiKey, srCampaignUuid, salesrobotLinkedinAccountUuid, hasInviteMessage);
+        return;
+      } catch (err) {
+        const status = err.response?.status;
+        const isRetryable = status === 504 || status === 502 || status === 503 || status === 429;
+        if (isRetryable && attempt < maxAttempts) {
+          emit('log', { message: `  Start got HTTP ${status} — waiting 10s then retrying...` });
+          await sleep(10000);
+        } else {
+          throw err;
+        }
+      }
+    }
+  }
+
+  await startWithRetry();
   emit('log', { message: `Pausing campaign...` });
   await pauseCampaign(salesrobotApiKey, srCampaignUuid, salesrobotLinkedinAccountUuid);
   await sleep(2000);
