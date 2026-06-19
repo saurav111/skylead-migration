@@ -17,9 +17,10 @@ function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
-function client(apiKey) {
+function client(apiKey, opts = {}) {
   return axios.create({
     baseURL: BASE,
+    timeout: opts.timeout || 60_000,
     headers: { 'X-API-KEY': apiKey, 'Content-Type': 'application/json' },
   });
 }
@@ -93,7 +94,7 @@ async function addSequenceSteps(apiKey, linkedinAccountUuid, campaignUuid, seque
 
 async function startCampaign(apiKey, campaignUuid, linkedinAccountUuid, hasInviteMessage = false) {
   await req(() =>
-    client(apiKey).post(
+    client(apiKey, { timeout: 120_000 }).post(
       `/start?campaignUuid=${campaignUuid}&hasInviteMessage=${hasInviteMessage}&linkedinAccountUuid=${linkedinAccountUuid}`
     )
   );
@@ -110,15 +111,14 @@ async function pauseCampaign(apiKey, campaignUuid, linkedinAccountUuid) {
 async function createLeadListFromCSV(apiKey, name, leads) {
   const prospectData = buildProspectData(leads);
   const resp = await req(() =>
-    client(apiKey).post('/leadlist/add-from-csv', { name, prospectData })
+    client(apiKey, { timeout: 180_000 }).post('/leadlist/add-from-csv', { name, prospectData })
   );
-  // Returns plain string UUID
   return typeof resp.data === 'string' ? resp.data : resp.data?.data;
 }
 
 async function addLeadListToCampaign(apiKey, campaignUuid, leadListUuid, startingStepOrdinal) {
   await req(() =>
-    client(apiKey).post('/campaign/add-leadlist', {
+    client(apiKey, { timeout: 180_000 }).post('/campaign/add-leadlist', {
       campaignUuid,
       leadListUuid,
       startingStepOrdinal,

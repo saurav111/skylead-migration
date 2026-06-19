@@ -109,22 +109,54 @@ async function getLeadsForStep(apiKey, userId, accountId, campaignId, stepId) {
 }
 
 // Flattens Skylead's tree sequence into a linear list by following the step ordinal.
-// Branches (non-main-path nextSteps) are counted and dropped.
+// Detects branch steps two ways:
+//   1. nextSteps with previousStepResult !== 'SUCCESS'
+//   2. condition steps (action=condition) with multiple nextSteps — each extra
+//      nextStep after the first is a conditional branch
+// Returns branch step references so the caller can fetch leads from them.
 function flattenSteps(campaignSteps) {
-  if (!campaignSteps || campaignSteps.length === 0) return { steps: [], branchesDropped: 0 };
+  if (!campaignSteps || campaignSteps.length === 0) return { steps: [], branchesDropped: 0, branchSteps: [] };
 
   const sorted = [...campaignSteps].sort((a, b) => a.step - b.step);
+  const mainStepIds = new Set(sorted.map(s => s.id));
 
   let branchesDropped = 0;
-  for (const step of sorted) {
-    const successBranches = (step.nextSteps || []).filter(
-      n => n.previousStepResult === 'SUCCESS'
-    );
-    const otherBranches = (step.nextSteps || []).length - successBranches.length;
-    branchesDropped += otherBranches;
+  const branchSteps = []; // { branchStepId, parentStepId }
+  const seenBranchIds = new Set();
+
+  function extractStepId(n) {
+    return n.nextStepId || n.stepId || n.id || n.campaignStepId || n.step;
   }
 
-  return { steps: sorted, branchesDropped };
+  for (const step of sorted) {
+    const nexts = step.nextSteps || [];
+
+    if (step.action === 'condition' && nexts.length > 1) {
+      // Condition step: first nextStep is the "true" (main) path,
+      // remaining are alternative branches
+      for (let i = 1; i < nexts.length; i++) {
+        branchesDropped++;
+        const branchId = extractStepId(nexts[i]);
+        if (branchId && !mainStepIds.has(branchId) && !seenBranchIds.has(branchId)) {
+          seenBranchIds.add(branchId);
+          branchSteps.push({ branchStepId: branchId, parentStepId: step.id });
+        }
+      }
+    } else {
+      for (const n of nexts) {
+        if (n.previousStepResult !== 'SUCCESS') {
+          branchesDropped++;
+          const branchId = extractStepId(n);
+          if (branchId && !mainStepIds.has(branchId) && !seenBranchIds.has(branchId)) {
+            seenBranchIds.add(branchId);
+            branchSteps.push({ branchStepId: branchId, parentStepId: step.id });
+          }
+        }
+      }
+    }
+  }
+
+  return { steps: sorted, branchesDropped, branchSteps };
 }
 
 const STEP_TYPE_MAP = {
