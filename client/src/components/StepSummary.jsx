@@ -1,9 +1,4 @@
-function downloadSkippedCSV(skippedLeads) {
-  const headers = ['Campaign', 'First Name', 'Last Name', 'Full Name', 'Email', 'Company', 'Occupation', 'LinkedIn URL (raw)', 'Profile Identifiers'];
-  const rows = skippedLeads.map(l => [
-    l.campaignName, l.firstName, l.lastName, l.fullName,
-    l.email, l.company, l.occupation, l.linkedinUrl, l.profileIdentifiers,
-  ]);
+function downloadCSV(filename, headers, rows) {
   const csv = [headers, ...rows]
     .map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(','))
     .join('\n');
@@ -11,9 +6,32 @@ function downloadSkippedCSV(skippedLeads) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = 'skipped-leads.csv';
+  a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+function downloadSkippedCSV(skippedLeads) {
+  downloadCSV(
+    'skipped-leads.csv',
+    ['Campaign', 'First Name', 'Last Name', 'Full Name', 'Email', 'Company', 'Occupation', 'LinkedIn URL (raw)', 'Profile Identifiers'],
+    skippedLeads.map(l => [
+      l.campaignName, l.firstName, l.lastName, l.fullName,
+      l.email, l.company, l.occupation, l.linkedinUrl, l.profileIdentifiers,
+    ]),
+  );
+}
+
+function downloadDuplicateCSV(duplicateLeads) {
+  downloadCSV(
+    'duplicate-profiles.csv',
+    ['Campaign', 'Skylead Lead ID', 'Step', 'Profile URL', 'First Name', 'Last Name', 'Full Name', 'Email', 'Company', 'Occupation', 'LinkedIn URL (raw)', 'Profile Identifiers'],
+    duplicateLeads.map(l => [
+      l.campaignName, l.skyleadLeadId, l.step, l.profileUrl,
+      l.firstName, l.lastName, l.fullName, l.email, l.company, l.occupation,
+      l.linkedinUrl, l.profileIdentifiers,
+    ]),
+  );
 }
 
 export default function StepSummary({ summary, onReset }) {
@@ -27,6 +45,8 @@ export default function StepSummary({ summary, onReset }) {
     branchesDropped = 0,
     errors = [],
     skippedLeads = [],
+    duplicateLeads = [],
+    leadsSkippedDuplicate = 0,
   } = summary;
 
   return (
@@ -63,11 +83,31 @@ export default function StepSummary({ summary, onReset }) {
             </button>
           )}
         </div>
+        {leadsSkippedDuplicate > 0 && (
+          <div className="stat-card yellow" style={{ position: 'relative' }}>
+            <div className="num">{leadsSkippedDuplicate}</div>
+            <div className="label">Duplicate profiles skipped</div>
+            {duplicateLeads.length > 0 && (
+              <button
+                onClick={() => downloadDuplicateCSV(duplicateLeads)}
+                style={{ marginTop: 10, fontSize: 12, padding: '4px 10px', cursor: 'pointer', border: '1px solid #d97706', borderRadius: 6, background: 'transparent', color: '#d97706', fontWeight: 600 }}
+              >
+                ↓ Download CSV
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {branchesDropped > 0 && (
         <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: '12px 16px', marginBottom: 16, fontSize: 13, color: '#92400e' }}>
           <strong>{branchesDropped} conditional branch(es)</strong> were not migrated — Salesrobot uses linear sequences. Review your campaigns and add any branch logic manually.
+        </div>
+      )}
+
+      {leadsSkippedDuplicate > 0 && (
+        <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: '12px 16px', marginBottom: 16, fontSize: 13, color: '#92400e' }}>
+          <strong>{leadsSkippedDuplicate} duplicate profile(s)</strong> were not imported — the same LinkedIn URL appeared in multiple Skylead steps and only the first occurrence was kept. Download the CSV for the full list.
         </div>
       )}
 

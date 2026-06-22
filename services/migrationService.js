@@ -10,6 +10,43 @@ const {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+// Skylead email steps store body as HTML (<html><div>...</div>). Salesrobot expects plain text.
+function htmlToPlainText(html) {
+  if (!html || typeof html !== 'string') return '';
+
+  let text = html
+    .replace(/<\s*br\s*\/?>/gi, '\n')
+    .replace(/<\/\s*(div|p|li|tr|h[1-6])\s*>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'");
+
+  text = text.split('\n').map(line => line.trimEnd()).join('\n');
+  return text.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function recordDuplicateLead(summary, campaignName, lead, profileUrl, stepOrdinal) {
+  summary.leadsSkippedDuplicate++;
+  summary.duplicateLeads.push({
+    campaignName,
+    skyleadLeadId: lead.id,
+    step: stepOrdinal,
+    profileUrl,
+    firstName: lead.firstName || '',
+    lastName: lead.lastName || '',
+    fullName: lead.fullName || lead.allFieldsData?.full_name || '',
+    email: lead.personalEmail || lead.businessEmail || lead.allFieldsData?.email || '',
+    company: lead.company || lead.allFieldsData?.currentCompany || '',
+    occupation: lead.occupation || '',
+    linkedinUrl: lead.linkedinUrl || '',
+    profileIdentifiers: (lead.profileIdentifiers || []).map(p => p.identifier).join('; '),
+  });
+}
+
 const {
   createCampaign,
   createEmailCampaign,
@@ -42,6 +79,8 @@ async function runMigration(config, emit) {
     branchesDropped: 0,
     errors: [],
     skippedLeads: [], // leads with no resolvable LinkedIn URL
+    duplicateLeads: [], // leads skipped because profile URL already imported
+    leadsSkippedDuplicate: 0,
   };
 
   for (const mapping of accountMappings) {
@@ -160,12 +199,13 @@ async function migrateCampaign({
     const stepType = mapStepType(s.action);
     const isEmailStep = stepType === 'SEND_EMAIL';
 
+    const rawBody = s.data?.message || '';
     const dto = {
       stepOrdinal: idx + 1,
       sequenceStepType: stepType,
       hoursDelay: idx === 0 ? 0 : Math.round((s.doAfterPreviousStep || 0) / 3_600_000),
       multiVariateMails: [{
-        body: s.data?.message || '',
+        body: isEmailStep ? htmlToPlainText(rawBody) : rawBody,
         ...(s.data?.subject ? { subject: s.data.subject } : {}),
       }],
       stepChannel: isEmailStep && hasEmailAccount ? 'EMAIL' : 'LINKEDIN',
@@ -316,6 +356,7 @@ async function migrateCampaign({
       const urlKey = url.toLowerCase();
       if (seenUrls.has(urlKey)) {
         dupes++;
+        recordDuplicateLead(summary, campaign.name, lead, url, stepOrdinal);
         if (dupeSamples.length < 5) {
           dupeSamples.push({ url, name: lead.fullName || `${lead.firstName} ${lead.lastName}`, id: lead.id, step: stepOrdinal });
         }
@@ -398,7 +439,11 @@ async function migrateCampaign({
           continue;
         }
         const urlKey = url.toLowerCase();
-        if (seenUrls.has(urlKey)) { dupes++; continue; }
+        if (seenUrls.has(urlKey)) {
+          dupes++;
+          recordDuplicateLead(summary, campaign.name, lead, url, targetOrdinal);
+          continue;
+        }
         seenUrls.add(urlKey);
         valid.push({ ...lead, _resolvedUrl: url });
       }

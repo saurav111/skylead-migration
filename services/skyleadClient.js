@@ -2,25 +2,44 @@ const axios = require('axios');
 
 const BASE = 'https://api.multilead.io/api/open-api/v1';
 
-function client(apiKey) {
+function client(apiKey, opts = {}) {
   return axios.create({
     baseURL: BASE,
+    timeout: opts.timeout ?? 60_000,
     headers: { Authorization: apiKey },
   });
 }
 
-async function withRetry(fn, retries = 3) {
-  for (let i = 0; i < retries; i++) {
+function isRetryableError(err) {
+  const status = err.response?.status;
+  if (status === 429 || status === 502 || status === 503 || status === 504) return true;
+
+  const code = err.code;
+  if (['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ECONNABORTED', 'ENOTFOUND', 'EAI_AGAIN'].includes(code)) {
+    return true;
+  }
+
+  const msg = err.message || '';
+  return /socket hang up|network error|timeout/i.test(msg);
+}
+
+async function withRetry(fn, retries = 5) {
+  for (let attempt = 0; attempt < retries; attempt++) {
     try {
       return await fn();
     } catch (err) {
-      const status = err.response?.status;
-      if (status === 429) {
-        const retryAfter = parseInt(err.response.headers['retry-after'] || '10', 10);
-        await sleep(retryAfter * 1000);
-        continue;
+      const isLast = attempt === retries - 1;
+      if (!isRetryableError(err) || isLast) throw err;
+
+      let waitMs;
+      if (err.response?.status === 429) {
+        waitMs = parseInt(err.response.headers['retry-after'] || '10', 10) * 1000;
+      } else {
+        waitMs = Math.min(2000 * 2 ** attempt, 30_000);
       }
-      throw err;
+
+      console.warn(`[skylead] Request failed (${err.code || err.message}), retry ${attempt + 1}/${retries - 1} in ${waitMs / 1000}s...`);
+      await sleep(waitMs);
     }
   }
 }
@@ -77,7 +96,9 @@ async function getCampaigns(apiKey, userId, accountId) {
 
 async function getCampaignDetails(apiKey, userId, accountId, campaignId) {
   const resp = await withRetry(() =>
-    client(apiKey).get(`/users/${userId}/accounts/${accountId}/campaigns/${campaignId}/details`)
+    client(apiKey, { timeout: 120_000 }).get(
+      `/users/${userId}/accounts/${accountId}/campaigns/${campaignId}/details`
+    )
   );
   return resp.data.result;
 }
