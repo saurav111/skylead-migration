@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
-const { getMe, getSeats, getCampaigns } = require('../services/skyleadClient');
-const { getLinkedinAccounts } = require('../services/salesrobotClient');
+const { getMe, getSeats, getCampaigns, getCampaignDetails, flattenSteps, detectCampaignFamily } = require('../services/skyleadClient');
+const { getLinkedinAccounts, getEmailAccounts } = require('../services/salesrobotClient');
 const { runMigration } = require('../services/migrationService');
 
 // POST /api/connect — validate both keys, auto-fetch userId + seats + SR accounts
@@ -36,7 +36,14 @@ router.post('/connect', async (req, res) => {
     return res.status(500).json({ error: `Salesrobot error: ${err.message}` });
   }
 
-  res.json({ userId: me.id, skyLeadUser: me, seats, srAccounts });
+  let srEmailAccounts = [];
+  try {
+    srEmailAccounts = await getEmailAccounts(salesrobotApiKey);
+  } catch (err) {
+    console.warn('Could not fetch Salesrobot email accounts:', err.message);
+  }
+
+  res.json({ userId: me.id, skyLeadUser: me, seats, srAccounts, srEmailAccounts });
 });
 
 // GET /api/campaigns?skyLeadApiKey=&skyLeadUserId=&accountId=
@@ -51,6 +58,43 @@ router.get('/campaigns', async (req, res) => {
     const campaigns = await getCampaigns(skyLeadApiKey, skyLeadUserId, accountId);
     res.json({ campaigns });
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/check-email-steps — check if selected campaigns contain email steps
+router.post('/check-email-steps', async (req, res) => {
+  const { skyLeadApiKey, skyLeadUserId, accountMappings, campaignIds } = req.body;
+
+  if (!skyLeadApiKey || !skyLeadUserId || !accountMappings?.length || !campaignIds?.length) {
+    return res.status(400).json({ error: 'Missing required params' });
+  }
+
+  try {
+    let hasEmailSteps = false;
+    const campaignsWithEmail = [];
+
+    for (const mapping of accountMappings) {
+      const campaigns = await getCampaigns(skyLeadApiKey, skyLeadUserId, mapping.skyLeadAccountId);
+      const selected = campaigns.filter(c => campaignIds.includes(String(c.id)));
+
+      for (const campaign of selected) {
+        const details = await getCampaignDetails(
+          skyLeadApiKey, skyLeadUserId, mapping.skyLeadAccountId, campaign.id
+        );
+        const { steps } = flattenSteps(details.campaignSteps);
+        const family = detectCampaignFamily(steps);
+
+        if (family === 'HYBRID' || family === 'NYLAS') {
+          hasEmailSteps = true;
+          campaignsWithEmail.push({ id: campaign.id, name: campaign.name, family });
+        }
+      }
+    }
+
+    res.json({ hasEmailSteps, campaignsWithEmail });
+  } catch (err) {
+    console.error('check-email-steps error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });

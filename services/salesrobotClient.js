@@ -66,16 +66,36 @@ async function getLinkedinAccounts(apiKey) {
   return all;
 }
 
-async function createCampaign(apiKey, linkedinAccountUuid, name) {
+async function getEmailAccounts(apiKey) {
+  const resp = await req(() =>
+    client(apiKey).get('/emailAccounts/list-all')
+  );
+  const data = resp.data?.data || resp.data;
+  return Array.isArray(data) ? data : [];
+}
+
+async function createCampaign(apiKey, linkedinAccountUuid, name, campaignFamily = 'LINKEDIN') {
   const resp = await req(() =>
     client(apiKey).post(`/campaign?linkedinAccountUuid=${linkedinAccountUuid}`, {
       campaignName: name,
       campaignType: 'ADVANCED',
-      campaignFamily: 'LINKEDIN',
+      campaignFamily,
       linkedinAccountUuid,
     })
   );
-  // Response is a plain UUID string in data
+  const d = resp.data?.data;
+  return typeof d === 'string' ? d : d?.uuid || d?.campaignUuid;
+}
+
+async function createEmailCampaign(apiKey, nylasAccountUuid, name) {
+  const resp = await req(() =>
+    client(apiKey).post(`/campaign/nylas?nylasAccountUuid=${nylasAccountUuid}`, {
+      campaignName: name,
+      campaignType: 'ADVANCED',
+      campaignFamily: 'NYLAS',
+      nylasAccountUuid,
+    })
+  );
   const d = resp.data?.data;
   return typeof d === 'string' ? d : d?.uuid || d?.campaignUuid;
 }
@@ -88,6 +108,28 @@ async function addSequenceSteps(apiKey, linkedinAccountUuid, campaignUuid, seque
       campaignType: 'ADVANCED',
       deleteExistingConditionalSequence: false,
       sequenceStepDTOList,
+    })
+  );
+}
+
+async function addSequenceStepsNylas(apiKey, nylasAccountUuid, campaignUuid, sequenceStepDTOList) {
+  await req(() =>
+    client(apiKey).post(`/sequence/save/from-steps-nylas?nylasAccountUuid=${nylasAccountUuid}`, {
+      campaignUuid,
+      selectedAccountType: 'NYLAS_ACCOUNT',
+      campaignType: 'ADVANCED',
+      deleteExistingConditionalSequence: false,
+      sequenceStepDTOList,
+    })
+  );
+}
+
+async function addRunnerAccounts(apiKey, campaignUuid, emailAccountUuids = [], linkedinAccountUuids = []) {
+  await req(() =>
+    client(apiKey).post('/campaign/add-runner-accounts', {
+      campaignUuid,
+      emailAccountUuids,
+      linkedinAccountUuids,
     })
   );
 }
@@ -163,8 +205,12 @@ function buildProspectData(leads) {
 
 module.exports = {
   getLinkedinAccounts,
+  getEmailAccounts,
   createCampaign,
+  createEmailCampaign,
   addSequenceSteps,
+  addSequenceStepsNylas,
+  addRunnerAccounts,
   startCampaign,
   pauseCampaign,
   createLeadListFromCSV,

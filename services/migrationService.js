@@ -1,16 +1,21 @@
+const { randomUUID } = require('crypto');
 const {
   getCampaigns,
   getCampaignDetails,
   getLeadsForStep,
   flattenSteps,
   mapStepType,
+  detectCampaignFamily,
 } = require('./skyleadClient');
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 const {
   createCampaign,
+  createEmailCampaign,
   addSequenceSteps,
+  addSequenceStepsNylas,
+  addRunnerAccounts,
   startCampaign,
   pauseCampaign,
   createLeadListFromCSV,
@@ -26,6 +31,7 @@ async function runMigration(config, emit) {
     accountMappings,
     selectedCampaignIds,
     includeReplied = true,
+    emailAccountUuid = '',
   } = config;
 
   const summary = {
@@ -66,6 +72,7 @@ async function runMigration(config, emit) {
         skyLeadAccountId,
         salesrobotApiKey,
         salesrobotLinkedinAccountUuid,
+        salesrobotEmailAccountUuid: emailAccountUuid,
         campaign,
         includeReplied,
         summary,
@@ -96,7 +103,7 @@ async function runMigration(config, emit) {
 
 async function migrateCampaign({
   skyLeadApiKey, skyLeadUserId, skyLeadAccountId,
-  salesrobotApiKey, salesrobotLinkedinAccountUuid,
+  salesrobotApiKey, salesrobotLinkedinAccountUuid, salesrobotEmailAccountUuid,
   campaign, includeReplied, summary, emit,
 }) {
   const result = { created: false, aborted: false, phaseErrors: [] };
@@ -133,23 +140,57 @@ async function migrateCampaign({
     emit('log', { message: `"${campaign.name}" has no steps — creating empty campaign` });
   }
 
-  const sequenceStepDTOList = steps.map((s, idx) => ({
-    stepOrdinal: idx + 1,
-    sequenceStepType: mapStepType(s.action),
-    hoursDelay: idx === 0 ? 0 : Math.round((s.doAfterPreviousStep || 0) / 3_600_000),
-    multiVariateMails: [{
-      body: s.data?.message || '',
-      ...(s.data?.subject ? { subject: s.data.subject } : {}),
-    }],
-  }));
+  // --- All campaigns are created as HYBRID ---
+  const hasEmailAccount = !!salesrobotEmailAccountUuid;
+  const hasEmailSteps = steps.some(s => (s.action || '').toLowerCase() === 'email');
+
+  if (hasEmailSteps && !hasEmailAccount) {
+    result.aborted = true;
+    result.phaseErrors.push({ phase: 'pre-check', message: 'Campaign has email steps but no Salesrobot email account is mapped. Please map an email account and retry.' });
+    return result;
+  }
+
+  emit('log', { message: `[family] Creating as HYBRID campaign (hasEmailSteps=${hasEmailSteps}, hasEmailAccount=${hasEmailAccount})` });
+
+  // --- Build sequence step DTOs ---
+  let emailThreadGroupId = null;
+  let isFirstEmailStep = true;
+
+  const sequenceStepDTOList = steps.map((s, idx) => {
+    const stepType = mapStepType(s.action);
+    const isEmailStep = stepType === 'SEND_EMAIL';
+
+    const dto = {
+      stepOrdinal: idx + 1,
+      sequenceStepType: stepType,
+      hoursDelay: idx === 0 ? 0 : Math.round((s.doAfterPreviousStep || 0) / 3_600_000),
+      multiVariateMails: [{
+        body: s.data?.message || '',
+        ...(s.data?.subject ? { subject: s.data.subject } : {}),
+      }],
+      stepChannel: isEmailStep && hasEmailAccount ? 'EMAIL' : 'LINKEDIN',
+    };
+
+    if (isEmailStep && hasEmailAccount) {
+      if (!emailThreadGroupId) emailThreadGroupId = randomUUID();
+      dto.emailThreadMode = isFirstEmailStep ? 'NEW' : 'CONTINUE';
+      dto.emailThreadGroupId = emailThreadGroupId;
+      isFirstEmailStep = false;
+      if (!dto.multiVariateMails[0].subject) {
+        dto.multiVariateMails[0].subject = campaign.name;
+      }
+    }
+
+    return dto;
+  });
 
   // --- Phase: Create campaign in Salesrobot ---
-  emit('log', { message: `[create] Creating campaign "${campaign.name}" in Salesrobot...` });
+  emit('log', { message: `[create] Creating HYBRID campaign "${campaign.name}" in Salesrobot...` });
 
   let srCampaignUuid;
   try {
     srCampaignUuid = await createCampaign(
-      salesrobotApiKey, salesrobotLinkedinAccountUuid, campaign.name
+      salesrobotApiKey, salesrobotLinkedinAccountUuid, campaign.name, 'HYBRID'
     );
     result.created = true;
     emit('log', { message: `[create] Campaign created: ${srCampaignUuid}` });
@@ -157,6 +198,18 @@ async function migrateCampaign({
     result.aborted = true;
     result.phaseErrors.push({ phase: 'create-campaign', message: `Failed to create campaign in Salesrobot: ${err.message}` });
     return result;
+  }
+
+  // --- Phase: Link email account ---
+  if (hasEmailAccount) {
+    emit('log', { message: `[link-email] Linking email account ${salesrobotEmailAccountUuid} to campaign...` });
+    try {
+      await addRunnerAccounts(salesrobotApiKey, srCampaignUuid, [salesrobotEmailAccountUuid], []);
+      emit('log', { message: `[link-email] Email account linked OK` });
+    } catch (err) {
+      result.phaseErrors.push({ phase: 'link-email', message: `Failed to link email account: ${err.message}` });
+      emit('log', { message: `[link-email] WARNING: Failed to link email account — ${err.message}. Email steps may not execute.` });
+    }
   }
 
   // --- Phase: Add sequence steps ---

@@ -167,10 +167,22 @@ const STEP_TYPE_MAP = {
   follow: 'FOLLOW',
   view: 'VIEW_PROFILE',
   like: 'LIKE_POST',
+  findandverifyemailbylinkedin: 'VIEW_PROFILE',
 };
+
+const EMAIL_ACTIONS = new Set(['email']);
+const LINKEDIN_ACTIONS = new Set(['message', 'connect', 'inmail', 'follow', 'view', 'like']);
 
 function mapStepType(action) {
   return STEP_TYPE_MAP[action?.toLowerCase()] || 'VIEW_PROFILE';
 }
 
-module.exports = { getMe, getSeats, getCampaigns, getCampaignDetails, getLeadsForStep, flattenSteps, mapStepType };
+function detectCampaignFamily(steps) {
+  for (const step of steps) {
+    const action = (step.action || '').toLowerCase();
+    if (EMAIL_ACTIONS.has(action)) return 'HYBRID';
+  }
+  return 'HYBRID';
+}
+
+module.exports = { getMe, getSeats, getCampaigns, getCampaignDetails, getLeadsForStep, flattenSteps, mapStepType, detectCampaignFamily };

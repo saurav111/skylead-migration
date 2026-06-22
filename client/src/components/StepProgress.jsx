@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 
-export default function StepProgress({ credentials, accountMappings, selectedCampaignIds, includeReplied, onDone }) {
+export default function StepProgress({ credentials, accountMappings, selectedCampaignIds, includeReplied, emailAccountUuid, onDone }) {
   const [logs, setLogs] = useState([]);
   const [done, setDone] = useState(false);
   const [error, setError] = useState('');
@@ -57,7 +57,7 @@ export default function StepProgress({ credentials, accountMappings, selectedCam
       const resp = await fetch('/api/migrate/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...credentials, accountMappings, selectedCampaignIds, includeReplied }),
+        body: JSON.stringify({ ...credentials, accountMappings, selectedCampaignIds, includeReplied, emailAccountUuid }),
       });
 
       if (!resp.ok) {

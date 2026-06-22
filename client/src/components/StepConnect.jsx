@@ -22,6 +22,7 @@ export default function StepConnect({ onDone }) {
         skyLeadUser: data.skyLeadUser,
         seats: data.seats,
         srAccounts: data.srAccounts,
+        srEmailAccounts: data.srEmailAccounts || [],
       });
     } catch (e) {
       setError(e.message);

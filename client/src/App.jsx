@@ -12,10 +12,12 @@ export default function App() {
   const [credentials, setCredentials] = useState(null);
   const [seats, setSeats] = useState([]);
   const [srAccounts, setSrAccounts] = useState([]);
+  const [srEmailAccounts, setSrEmailAccounts] = useState([]);
   const [accountMappings, setAccountMappings] = useState([]);
   const [allCampaigns, setAllCampaigns] = useState([]);
   const [selectedCampaignIds, setSelectedCampaignIds] = useState([]);
   const [includeReplied, setIncludeReplied] = useState(false);
+  const [emailAccountUuid, setEmailAccountUuid] = useState('');
   const [summary, setSummary] = useState(null);
 
   function goTo(s) { setStep(s); }
@@ -31,10 +33,11 @@ export default function App() {
 
       {step === 0 && (
         <StepConnect
-          onDone={({ creds, seats, srAccounts }) => {
+          onDone={({ creds, seats, srAccounts, srEmailAccounts }) => {
             setCredentials(creds);
             setSeats(seats);
             setSrAccounts(srAccounts);
+            setSrEmailAccounts(srEmailAccounts || []);
             goTo(1);
           }}
         />
@@ -57,11 +60,13 @@ export default function App() {
           credentials={credentials}
           accountMappings={accountMappings}
           seats={seats}
+          srEmailAccounts={srEmailAccounts}
           onBack={() => goTo(1)}
-          onDone={({ campaigns, selectedIds, includeReplied: ir }) => {
+          onDone={({ campaigns, selectedIds, includeReplied: ir, emailAccountUuid: eu }) => {
             setAllCampaigns(campaigns);
             setSelectedCampaignIds(selectedIds);
             setIncludeReplied(ir);
+            setEmailAccountUuid(eu || '');
             goTo(3);
           }}
         />
@@ -73,6 +78,7 @@ export default function App() {
           accountMappings={accountMappings}
           selectedCampaignIds={selectedCampaignIds}
           includeReplied={includeReplied}
+          emailAccountUuid={emailAccountUuid}
           onDone={(s) => { setSummary(s); goTo(4); }}
         />
       )}
@@ -85,10 +91,12 @@ export default function App() {
             setCredentials(null);
             setSeats([]);
             setSrAccounts([]);
+            setSrEmailAccounts([]);
             setAccountMappings([]);
             setAllCampaigns([]);
             setSelectedCampaignIds([]);
             setIncludeReplied(false);
+            setEmailAccountUuid('');
             setSummary(null);
           }}
         />

@@ -1,11 +1,17 @@
 import { useState, useEffect } from 'react';
 
-export default function StepCampaignSelect({ credentials, accountMappings, seats, onBack, onDone }) {
+export default function StepCampaignSelect({ credentials, accountMappings, seats, srEmailAccounts = [], onBack, onDone }) {
   const [campaigns, setCampaigns] = useState([]);
   const [selected, setSelected] = useState(new Set());
   const [includeReplied, setIncludeReplied] = useState(true);
   const [loading, setLoading] = useState(true);
+  const [checking, setChecking] = useState(false);
   const [error, setError] = useState('');
+
+  // Email step detection state
+  const [emailPromptVisible, setEmailPromptVisible] = useState(false);
+  const [campaignsWithEmail, setCampaignsWithEmail] = useState([]);
+  const [emailAccountUuid, setEmailAccountUuid] = useState('');
 
   const { skyLeadApiKey, skyLeadUserId } = credentials;
 
@@ -52,6 +58,7 @@ export default function StepCampaignSelect({ credentials, accountMappings, seats
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
     });
+    setEmailPromptVisible(false);
   }
 
   function toggleAll() {
@@ -60,11 +67,55 @@ export default function StepCampaignSelect({ credentials, accountMappings, seats
     } else {
       setSelected(new Set(campaigns.map(c => String(c.id))));
     }
+    setEmailPromptVisible(false);
   }
 
-  function handleNext() {
+  async function handleNext() {
     if (selected.size === 0) return;
-    onDone({ campaigns, selectedIds: [...selected], includeReplied });
+
+    if (emailPromptVisible) {
+      onDone({
+        campaigns,
+        selectedIds: [...selected],
+        includeReplied,
+        emailAccountUuid: emailAccountUuid || '',
+      });
+      return;
+    }
+
+    setChecking(true);
+    setError('');
+
+    try {
+      const resp = await fetch('/api/check-email-steps', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          skyLeadApiKey,
+          skyLeadUserId,
+          accountMappings,
+          campaignIds: [...selected],
+        }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || 'Failed to check campaigns');
+
+      if (data.hasEmailSteps && srEmailAccounts.length > 0) {
+        setCampaignsWithEmail(data.campaignsWithEmail || []);
+        setEmailPromptVisible(true);
+      } else {
+        onDone({
+          campaigns,
+          selectedIds: [...selected],
+          includeReplied,
+          emailAccountUuid: '',
+        });
+      }
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setChecking(false);
+    }
   }
 
   if (loading) {
@@ -128,10 +179,40 @@ export default function StepCampaignSelect({ credentials, accountMappings, seats
         </span>
       </label>
 
+      {emailPromptVisible && (
+        <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '16px', marginBottom: 16 }}>
+          <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 6, color: '#1e40af' }}>
+            Email steps detected
+          </div>
+          <p style={{ fontSize: 13, color: '#374151', margin: '0 0 8px' }}>
+            {campaignsWithEmail.length} campaign(s) contain email steps:{' '}
+            {campaignsWithEmail.map(c => c.name).join(', ')}.
+            Select the Salesrobot email account to use for these steps.
+          </p>
+          <select
+            value={emailAccountUuid}
+            onChange={e => setEmailAccountUuid(e.target.value)}
+            style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid #93c5fd', fontSize: 14 }}
+          >
+            <option value="">Skip email steps</option>
+            {srEmailAccounts.map(acc => {
+              const status = acc.tokenValid ? '✓' : '⚠';
+              return (
+                <option key={acc.emailUuid} value={acc.emailUuid}>
+                  {status} {acc.email}
+                </option>
+              );
+            })}
+          </select>
+        </div>
+      )}
+
       <div className="btn-row">
         <button className="btn btn-secondary" onClick={onBack}>← Back</button>
-        <button className="btn btn-primary" disabled={selected.size === 0} onClick={handleNext}>
-          Migrate {selected.size} campaign{selected.size !== 1 ? 's' : ''} →
+        <button className="btn btn-primary" disabled={selected.size === 0 || checking} onClick={handleNext}>
+          {checking
+            ? <><span className="spinner" /> Checking…</>
+            : `Migrate ${selected.size} campaign${selected.size !== 1 ? 's' : ''} →`}
         </button>
       </div>
     </div>
