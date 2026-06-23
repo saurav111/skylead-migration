@@ -189,7 +189,7 @@ function buildProspectData(leads) {
     { name: 'fullName',        pick: l => l.allFieldsData?.full_name || l.fullName || '' },
     { name: 'jobTitle',        pick: l => l.occupation || '' },
     { name: 'companyName',     pick: l => l.allFieldsData?.currentCompany || l.company || '' },
-    { name: 'emailId',         pick: l => l.personalEmail || l.allFieldsData?.email || '' },
+    { name: 'emailId',         pick: l => l._resolvedEmail || l.personalEmail || l.businessEmail || l.allFieldsData?.email || '' },
     { name: 'phoneNumber',     pick: l => l.allFieldsData?.phone || '' },
     { name: 'connectionLevel', pick: l => String(l.connectionDegree || '') },
     { name: 'profilePhoto',    pick: l => l.image || '' },

@@ -29,6 +29,73 @@ function htmlToPlainText(html) {
   return text.replace(/\n{3,}/g, '\n\n').trim();
 }
 
+function resolveLeadEmail(lead) {
+  const identifiers = lead.profileIdentifiers || [];
+
+  const personalId = identifiers.find(p => p.identityTypeId === 4);
+  if (personalId?.identifier?.trim()) return personalId.identifier.trim();
+
+  const businessId = identifiers.find(p => p.identityTypeId === 5);
+  if (businessId?.identifier?.trim()) return businessId.identifier.trim();
+
+  return (
+    lead.personalEmail
+    || lead.businessEmail
+    || lead.allFieldsData?.email
+    || ''
+  ).trim();
+}
+
+function resolveLeadLinkedInUrl(lead) {
+  const identifiers = lead.profileIdentifiers || [];
+
+  const navId = identifiers.find(p => p.identityTypeId === 2);
+  if (navId?.identifier?.trim()) {
+    const id = navId.identifier.trim();
+    return id.startsWith('http')
+      ? id
+      : `https://www.linkedin.com/sales/people/${id}`;
+  }
+
+  const basicId = identifiers.find(p => p.identityTypeId === 1);
+  if (basicId?.identifier?.trim()) {
+    const id = basicId.identifier.trim();
+    return id.startsWith('http')
+      ? id
+      : `https://www.linkedin.com/in/${id}`;
+  }
+
+  return (lead.linkedinUrl || '').trim();
+}
+
+function resolveLeadIdentity(lead, allowEmailOnly) {
+  const url = resolveLeadLinkedInUrl(lead);
+  const email = resolveLeadEmail(lead);
+
+  if (url) {
+    return { url, email, dedupeKey: url.toLowerCase(), emailOnly: false };
+  }
+  if (allowEmailOnly && email) {
+    return { url: '', email, dedupeKey: `email:${email.toLowerCase()}`, emailOnly: true };
+  }
+  return null;
+}
+
+function recordSkippedLead(summary, campaignName, lead) {
+  summary.leadsSkippedNoUrl++;
+  summary.skippedLeads.push({
+    campaignName,
+    firstName: lead.firstName || '',
+    lastName: lead.lastName || '',
+    fullName: lead.fullName || lead.allFieldsData?.full_name || '',
+    email: resolveLeadEmail(lead),
+    company: lead.company || lead.allFieldsData?.currentCompany || '',
+    occupation: lead.occupation || '',
+    linkedinUrl: lead.linkedinUrl || '',
+    profileIdentifiers: (lead.profileIdentifiers || []).map(p => p.identifier).join('; '),
+  });
+}
+
 function recordDuplicateLead(summary, campaignName, lead, profileUrl, stepOrdinal) {
   summary.leadsSkippedDuplicate++;
   summary.duplicateLeads.push({
@@ -78,7 +145,7 @@ async function runMigration(config, emit) {
     leadsSkippedReplied: 0,
     branchesDropped: 0,
     errors: [],
-    skippedLeads: [], // leads with no resolvable LinkedIn URL
+    skippedLeads: [], // leads with no resolvable LinkedIn URL or email (when email allowed)
     duplicateLeads: [], // leads skipped because profile URL already imported
     leadsSkippedDuplicate: 0,
   };
@@ -268,33 +335,45 @@ async function migrateCampaign({
   // --- Phase: Fetch leads per step from Skylead using filterByCurrentStep ---
   emit('log', { message: `[leads] Fetching leads for ${steps.length} step(s)...` });
 
-  // Resolve the best LinkedIn profile URL for a lead.
-  // Priority: Sales Nav (type 2) > Basic (type 1) > linkedinUrl fallback.
-  function resolveUrl(lead) {
-    const identifiers = lead.profileIdentifiers || [];
-
-    const navId = identifiers.find(p => p.identityTypeId === 2);
-    if (navId?.identifier?.trim()) {
-      const id = navId.identifier.trim();
-      return id.startsWith('http')
-        ? id
-        : `https://www.linkedin.com/sales/people/${id}`;
-    }
-
-    const basicId = identifiers.find(p => p.identityTypeId === 1);
-    if (basicId?.identifier?.trim()) {
-      const id = basicId.identifier.trim();
-      return id.startsWith('http')
-        ? id
-        : `https://www.linkedin.com/in/${id}`;
-    }
-
-    return (lead.linkedinUrl || '').trim();
+  const allowEmailOnly = hasEmailAccount && hasEmailSteps;
+  if (allowEmailOnly) {
+    emit('log', { message: `[leads] Email account mapped — email-only leads allowed (no LinkedIn URL required)` });
   }
 
-  const seenUrls = new Set();
-  const dupeSamples = [];
+  const seenKeys = new Set();
   const leadsByOrdinal = new Map();
+
+  function processLead(lead, stepOrdinal) {
+    const identity = resolveLeadIdentity(lead, allowEmailOnly);
+    if (!identity) {
+      recordSkippedLead(summary, campaign.name, lead);
+      return 'noIdentity';
+    }
+
+    if (!includeReplied && lead.leadStatusId === 4) {
+      summary.leadsSkippedReplied++;
+      return 'replied';
+    }
+
+    if (seenKeys.has(identity.dedupeKey)) {
+      recordDuplicateLead(
+        summary,
+        campaign.name,
+        lead,
+        identity.url || identity.email,
+        stepOrdinal
+      );
+      return 'dupe';
+    }
+
+    seenKeys.add(identity.dedupeKey);
+    return {
+      ...lead,
+      _resolvedUrl: identity.url,
+      _resolvedEmail: identity.email,
+      _emailOnly: identity.emailOnly,
+    };
+  }
 
   for (const [idx, step] of steps.entries()) {
     const stepOrdinal = idx + 1;
@@ -321,63 +400,36 @@ async function migrateCampaign({
       emit('log', { message: `[leads]   [debug] sample profileIdentifiers=${JSON.stringify((sample.profileIdentifiers || []).slice(0, 3))}` });
     }
 
-    let noUrl = 0;
+    let noIdentity = 0;
     let replied = 0;
     let dupes = 0;
     const valid = [];
 
     for (const lead of leads) {
-      const url = resolveUrl(lead);
-
-      if (!url) {
-        noUrl++;
-        summary.leadsSkippedNoUrl++;
-        summary.skippedLeads.push({
-          campaignName: campaign.name,
-          firstName: lead.firstName || '',
-          lastName: lead.lastName || '',
-          fullName: lead.fullName || lead.allFieldsData?.full_name || '',
-          email: lead.personalEmail || lead.businessEmail || lead.allFieldsData?.email || '',
-          company: lead.company || lead.allFieldsData?.currentCompany || '',
-          occupation: lead.occupation || '',
-          linkedinUrl: lead.linkedinUrl || '',
-          profileIdentifiers: (lead.profileIdentifiers || []).map(p => p.identifier).join('; '),
-        });
+      const result = processLead(lead, stepOrdinal);
+      if (result === 'noIdentity') {
+        noIdentity++;
         continue;
       }
-
-      if (!includeReplied && lead.leadStatusId === 4) {
+      if (result === 'replied') {
         replied++;
-        summary.leadsSkippedReplied++;
         continue;
       }
-
-      // Deduplicate across all steps by URL (case-insensitive)
-      const urlKey = url.toLowerCase();
-      if (seenUrls.has(urlKey)) {
+      if (result === 'dupe') {
         dupes++;
-        recordDuplicateLead(summary, campaign.name, lead, url, stepOrdinal);
-        if (dupeSamples.length < 5) {
-          dupeSamples.push({ url, name: lead.fullName || `${lead.firstName} ${lead.lastName}`, id: lead.id, step: stepOrdinal });
-        }
         continue;
       }
-      seenUrls.add(urlKey);
-
-      valid.push({ ...lead, _resolvedUrl: url });
+      valid.push(result);
     }
 
-    emit('log', { message: `[leads]   Step ${stepOrdinal}: ${valid.length} valid, ${noUrl} no URL, ${replied} replied skipped, ${dupes} duplicate(s)` });
+    emit('log', { message: `[leads]   Step ${stepOrdinal}: ${valid.length} valid, ${noIdentity} no identity, ${replied} replied skipped, ${dupes} duplicate(s)` });
     if (valid.length > 0) {
-      emit('log', { message: `[leads]   [debug] sample profileUrl: ${valid[0]._resolvedUrl}` });
+      const sample = valid[0];
+      const sampleId = sample._emailOnly
+        ? `email=${sample._resolvedEmail}`
+        : `profileUrl=${sample._resolvedUrl}`;
+      emit('log', { message: `[leads]   [debug] sample ${sampleId}` });
       leadsByOrdinal.set(stepOrdinal, { step, valid });
-    }
-  }
-
-  if (dupeSamples.length > 0) {
-    emit('log', { message: `[leads] [dupe-samples] First ${dupeSamples.length} duplicate profile(s):` });
-    for (const d of dupeSamples) {
-      emit('log', { message: `[leads] [dupe-samples]   name="${d.name}" id=${d.id} step=${d.step} url=${d.url}` });
     }
   }
 
@@ -410,45 +462,29 @@ async function migrateCampaign({
         continue;
       }
 
-      let noUrl = 0;
+      let noIdentity = 0;
       let replied = 0;
       let dupes = 0;
       const valid = [];
 
       for (const lead of leads) {
-        const url = resolveUrl(lead);
-        if (!url) {
-          noUrl++;
-          summary.leadsSkippedNoUrl++;
-          summary.skippedLeads.push({
-            campaignName: campaign.name,
-            firstName: lead.firstName || '',
-            lastName: lead.lastName || '',
-            fullName: lead.fullName || lead.allFieldsData?.full_name || '',
-            email: lead.personalEmail || lead.businessEmail || lead.allFieldsData?.email || '',
-            company: lead.company || lead.allFieldsData?.currentCompany || '',
-            occupation: lead.occupation || '',
-            linkedinUrl: lead.linkedinUrl || '',
-            profileIdentifiers: (lead.profileIdentifiers || []).map(p => p.identifier).join('; '),
-          });
+        const result = processLead(lead, targetOrdinal);
+        if (result === 'noIdentity') {
+          noIdentity++;
           continue;
         }
-        if (!includeReplied && lead.leadStatusId === 4) {
+        if (result === 'replied') {
           replied++;
-          summary.leadsSkippedReplied++;
           continue;
         }
-        const urlKey = url.toLowerCase();
-        if (seenUrls.has(urlKey)) {
+        if (result === 'dupe') {
           dupes++;
-          recordDuplicateLead(summary, campaign.name, lead, url, targetOrdinal);
           continue;
         }
-        seenUrls.add(urlKey);
-        valid.push({ ...lead, _resolvedUrl: url });
+        valid.push(result);
       }
 
-      emit('log', { message: `[leads]   Branch ${branchStepId} → step ${targetOrdinal}: fetched ${leads.length}, ${valid.length} valid (new), ${dupes} duplicate(s)` });
+      emit('log', { message: `[leads]   Branch ${branchStepId} → step ${targetOrdinal}: fetched ${leads.length}, ${valid.length} valid (new), ${noIdentity} no identity, ${dupes} duplicate(s)` });
 
       if (valid.length > 0) {
         if (!leadsByOrdinal.has(targetOrdinal)) {
@@ -460,9 +496,12 @@ async function migrateCampaign({
   }
 
   const totalValid = [...leadsByOrdinal.values()].reduce((sum, e) => sum + e.valid.length, 0);
-  const totalDupes = seenUrls.size < totalValid ? 0 : seenUrls.size - totalValid;
-  emit('log', { message: `[leads] Total: ${totalValid} unique valid lead(s) across ${leadsByOrdinal.size} step(s)` });
-  emit('log', { message: `[leads] Skylead numberOfLeadsInStep sum: ${skyLeadTotalInSteps}, unique URLs seen: ${seenUrls.size}, skipped no-URL: ${summary.leadsSkippedNoUrl}, skipped replied: ${summary.leadsSkippedReplied}` });
+  const emailOnlyCount = [...leadsByOrdinal.values()].reduce(
+    (sum, e) => sum + e.valid.filter(l => l._emailOnly).length,
+    0
+  );
+  emit('log', { message: `[leads] Total: ${totalValid} unique valid lead(s) across ${leadsByOrdinal.size} step(s) (${emailOnlyCount} email-only)` });
+  emit('log', { message: `[leads] Skylead numberOfLeadsInStep sum: ${skyLeadTotalInSteps}, unique identities seen: ${seenKeys.size}, skipped no-identity: ${summary.leadsSkippedNoUrl}, skipped replied: ${summary.leadsSkippedReplied}` });
   if (skyLeadTotalInSteps > totalValid) {
     emit('log', { message: `[leads] ⚠ Gap: ${skyLeadTotalInSteps - totalValid} leads in Skylead step counts but not in migration (likely URL duplicates across steps or inactive leads not returned by API)` });
   }
