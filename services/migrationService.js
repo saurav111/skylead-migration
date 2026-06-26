@@ -375,9 +375,16 @@ async function migrateCampaign({
     };
   }
 
+  // Skylead vs Salesrobot step semantics differ by one:
+  //   - In Skylead, a lead "at step N" has ALREADY executed step N.
+  //   - In Salesrobot, a lead "at step N" has YET to execute step N.
+  // So a lead returned by filterByCurrentStep for Skylead step N must be placed
+  // at Salesrobot step N + 1 (to continue from the next, not re-run step N).
+  // If N is the last step, cap at the last step.
   for (const [idx, step] of steps.entries()) {
     const stepOrdinal = idx + 1;
-    emit('log', { message: `[leads]   Fetching leads at step ${stepOrdinal} (Skylead step ID ${step.id})...` });
+    const targetOrdinal = Math.min(stepOrdinal + 1, steps.length);
+    emit('log', { message: `[leads]   Fetching leads at Skylead step ${stepOrdinal} (id ${step.id}) → placing at Salesrobot step ${targetOrdinal}...` });
 
     let leads;
     try {
@@ -406,7 +413,7 @@ async function migrateCampaign({
     const valid = [];
 
     for (const lead of leads) {
-      const result = processLead(lead, stepOrdinal);
+      const result = processLead(lead, targetOrdinal);
       if (result === 'noIdentity') {
         noIdentity++;
         continue;
@@ -422,14 +429,19 @@ async function migrateCampaign({
       valid.push(result);
     }
 
-    emit('log', { message: `[leads]   Step ${stepOrdinal}: ${valid.length} valid, ${noIdentity} no identity, ${replied} replied skipped, ${dupes} duplicate(s)` });
+    emit('log', { message: `[leads]   Skylead step ${stepOrdinal} → Salesrobot step ${targetOrdinal}: ${valid.length} valid, ${noIdentity} no identity, ${replied} replied skipped, ${dupes} duplicate(s)` });
     if (valid.length > 0) {
       const sample = valid[0];
       const sampleId = sample._emailOnly
         ? `email=${sample._resolvedEmail}`
         : `profileUrl=${sample._resolvedUrl}`;
       emit('log', { message: `[leads]   [debug] sample ${sampleId}` });
-      leadsByOrdinal.set(stepOrdinal, { step, valid });
+      // Merge into the target bucket: the last two Skylead steps both map to the
+      // final Salesrobot step (due to capping), so don't overwrite.
+      if (!leadsByOrdinal.has(targetOrdinal)) {
+        leadsByOrdinal.set(targetOrdinal, { step: steps[targetOrdinal - 1], valid: [] });
+      }
+      leadsByOrdinal.get(targetOrdinal).valid.push(...valid);
     }
   }
 
