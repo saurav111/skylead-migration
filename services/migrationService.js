@@ -268,7 +268,7 @@ async function migrateCampaign({
 
     const rawBody = s.data?.message || '';
     const dto = {
-      stepOrdinal: idx + 1,
+      stepOrdinal: idx, // Salesrobot step ordinals are 0-based
       sequenceStepType: stepType,
       hoursDelay: idx === 0 ? 0 : Math.round((s.doAfterPreviousStep || 0) / 3_600_000),
       multiVariateMails: [{
@@ -375,16 +375,16 @@ async function migrateCampaign({
     };
   }
 
-  // Skylead vs Salesrobot step semantics differ by one:
+  // Skylead and Salesrobot share the same step semantics, and Salesrobot ordinals
+  // are 0-based (step idx in the sequence) while we iterate steps 0..n-1:
   //   - In Skylead, a lead "at step N" has ALREADY executed step N.
-  //   - In Salesrobot, a lead "at step N" has YET to execute step N.
-  // So a lead returned by filterByCurrentStep for Skylead step N must be placed
-  // at Salesrobot step N + 1 (to continue from the next, not re-run step N).
-  // If N is the last step, cap at the last step.
+  //   - In Salesrobot, a lead "at step N" has ALREADY executed step N.
+  // So a lead returned by filterByCurrentStep for the idx-th Skylead step (which it
+  // completed) maps directly to the same 0-based Salesrobot step ordinal idx.
   for (const [idx, step] of steps.entries()) {
-    const stepOrdinal = idx + 1;
-    const targetOrdinal = Math.min(stepOrdinal + 1, steps.length);
-    emit('log', { message: `[leads]   Fetching leads at Skylead step ${stepOrdinal} (id ${step.id}) → placing at Salesrobot step ${targetOrdinal}...` });
+    const skyleadStep = idx + 1; // human-readable Skylead step number (for logs)
+    const targetOrdinal = idx;
+    emit('log', { message: `[leads]   Fetching leads at Skylead step ${skyleadStep} (id ${step.id}) → placing at Salesrobot step ${targetOrdinal}...` });
 
     let leads;
     try {
@@ -392,12 +392,12 @@ async function migrateCampaign({
         skyLeadApiKey, skyLeadUserId, skyLeadAccountId, campaign.id, step.id
       );
     } catch (err) {
-      result.phaseErrors.push({ phase: `fetch-leads-step-${stepOrdinal}`, message: `Failed to fetch leads for step ${stepOrdinal}: ${err.message}` });
-      emit('log', { message: `[leads]   WARNING: Failed to fetch leads for step ${stepOrdinal} — ${err.message}. Skipping step.` });
+      result.phaseErrors.push({ phase: `fetch-leads-step-${skyleadStep}`, message: `Failed to fetch leads for step ${skyleadStep}: ${err.message}` });
+      emit('log', { message: `[leads]   WARNING: Failed to fetch leads for step ${skyleadStep} — ${err.message}. Skipping step.` });
       continue;
     }
 
-    emit('log', { message: `[leads]   Step ${stepOrdinal}: fetched ${leads.length} lead(s) from API` });
+    emit('log', { message: `[leads]   Skylead step ${skyleadStep}: fetched ${leads.length} lead(s) from API` });
 
     // Log sample lead on first step for debugging
     if (idx === 0 && leads.length > 0) {
@@ -429,17 +429,17 @@ async function migrateCampaign({
       valid.push(result);
     }
 
-    emit('log', { message: `[leads]   Skylead step ${stepOrdinal} → Salesrobot step ${targetOrdinal}: ${valid.length} valid, ${noIdentity} no identity, ${replied} replied skipped, ${dupes} duplicate(s)` });
+    emit('log', { message: `[leads]   Skylead step ${skyleadStep} → Salesrobot step ${targetOrdinal}: ${valid.length} valid, ${noIdentity} no identity, ${replied} replied skipped, ${dupes} duplicate(s)` });
     if (valid.length > 0) {
       const sample = valid[0];
       const sampleId = sample._emailOnly
         ? `email=${sample._resolvedEmail}`
         : `profileUrl=${sample._resolvedUrl}`;
       emit('log', { message: `[leads]   [debug] sample ${sampleId}` });
-      // Merge into the target bucket: the last two Skylead steps both map to the
-      // final Salesrobot step (due to capping), so don't overwrite.
+      // Merge into the target bucket (branch steps below may target the same
+      // ordinal), so don't overwrite an existing bucket.
       if (!leadsByOrdinal.has(targetOrdinal)) {
-        leadsByOrdinal.set(targetOrdinal, { step: steps[targetOrdinal - 1], valid: [] });
+        leadsByOrdinal.set(targetOrdinal, { step: steps[targetOrdinal], valid: [] });
       }
       leadsByOrdinal.get(targetOrdinal).valid.push(...valid);
     }
@@ -447,20 +447,20 @@ async function migrateCampaign({
 
   // --- Also fetch leads from branch steps (conditional paths) ---
   // These leads already completed the parent step (it executed but got a non-SUCCESS
-  // result like FAILURE/NO_REPLY). Place them at parentOrdinal + 1 so they skip the
-  // already-executed step and continue from the next one in the linear sequence.
-  // If parentOrdinal is the last step, cap at the last step.
+  // result like FAILURE/NO_REPLY). Since "at step N" means "has executed N" in both
+  // tools, they map directly to the parent's own 0-based Salesrobot ordinal so the
+  // sequence continues from the next step.
   const stepIdToOrdinal = new Map();
   for (const [idx, step] of steps.entries()) {
-    stepIdToOrdinal.set(step.id, idx + 1);
+    stepIdToOrdinal.set(step.id, idx); // 0-based Salesrobot ordinal
   }
 
   if (branchSteps.length > 0) {
     emit('log', { message: `[leads] Fetching leads from ${branchSteps.length} branch step(s)...` });
 
     for (const { branchStepId, parentStepId } of branchSteps) {
-      const parentOrdinal = stepIdToOrdinal.get(parentStepId) || 1;
-      const targetOrdinal = Math.min(parentOrdinal + 1, steps.length);
+      const parentOrdinal = stepIdToOrdinal.get(parentStepId) || 0;
+      const targetOrdinal = parentOrdinal;
       emit('log', { message: `[leads]   Fetching leads at branch step ${branchStepId} (parent step ${parentOrdinal} → placing at step ${targetOrdinal})...` });
 
       let leads;
@@ -500,7 +500,7 @@ async function migrateCampaign({
 
       if (valid.length > 0) {
         if (!leadsByOrdinal.has(targetOrdinal)) {
-          leadsByOrdinal.set(targetOrdinal, { step: steps[targetOrdinal - 1], valid: [] });
+          leadsByOrdinal.set(targetOrdinal, { step: steps[targetOrdinal], valid: [] });
         }
         leadsByOrdinal.get(targetOrdinal).valid.push(...valid);
       }
@@ -519,7 +519,7 @@ async function migrateCampaign({
   }
 
   // --- Phase: Seed one lead ---
-  const seedEntry = leadsByOrdinal.get(1)
+  const seedEntry = leadsByOrdinal.get(0)
     || [...leadsByOrdinal.values()][0];
 
   if (seedEntry) {
@@ -606,16 +606,21 @@ async function migrateCampaign({
   }
 
   // --- Phase: Import leads via lead lists ---
+  // leadsByOrdinal keys are 0-based step ordinals (matching the sequence DTO
+  // stepOrdinal). The lead-list import API's startingStepOrdinal is 1-based
+  // (must be >= 1), so convert with + 1. For 0th-step prospects, omit it entirely.
   for (const [stepOrdinal, { step, valid }] of leadsByOrdinal) {
-    emit('log', { message: `[import] Importing ${valid.length} lead(s) at step ${stepOrdinal} via lead list...` });
+    const startingStepOrdinal = stepOrdinal === 0 ? undefined : stepOrdinal + 1;
+    const ordinalLabel = startingStepOrdinal == null ? 'none' : startingStepOrdinal;
+    emit('log', { message: `[import] Importing ${valid.length} lead(s) at step ${stepOrdinal} (startingStepOrdinal=${ordinalLabel}) via lead list...` });
 
     try {
       const leadListName = `${campaign.name} - Step ${stepOrdinal}`;
       const leadListUuid = await createLeadListFromCSV(salesrobotApiKey, leadListName, valid);
       emit('log', { message: `[import] Lead list created: ${leadListUuid}` });
 
-      await addLeadListToCampaign(salesrobotApiKey, srCampaignUuid, leadListUuid, stepOrdinal);
-      emit('log', { message: `[import] Lead list attached at step ${stepOrdinal} OK` });
+      await addLeadListToCampaign(salesrobotApiKey, srCampaignUuid, leadListUuid, startingStepOrdinal);
+      emit('log', { message: `[import] Lead list attached at step ${stepOrdinal} (startingStepOrdinal=${ordinalLabel}) OK` });
 
       summary.leadsImported += valid.length;
       emit('leads_imported', { count: valid.length, step: stepOrdinal, campaignName: campaign.name });

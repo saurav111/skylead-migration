@@ -159,16 +159,17 @@ async function createLeadListFromCSV(apiKey, name, leads) {
 }
 
 async function addLeadListToCampaign(apiKey, campaignUuid, leadListUuid, startingStepOrdinal) {
+  const payload = { campaignUuid, leadListUuid };
+  // Omit startingStepOrdinal entirely for 0th-step prospects (API requires >= 1).
+  if (startingStepOrdinal != null) {
+    payload.startingStepOrdinal = startingStepOrdinal;
+  }
   await req(() =>
-    client(apiKey, { timeout: 180_000 }).post('/campaign/add-leadlist', {
-      campaignUuid,
-      leadListUuid,
-      startingStepOrdinal,
-    })
+    client(apiKey, { timeout: 180_000 }).post('/campaign/add-leadlist', payload)
   );
 }
 
-// Adds leads directly to a campaign (no startingStepOrdinal — they land at step 1).
+// Adds leads directly to a campaign (no startingStepOrdinal — they land at step 0).
 // Used to seed the campaign with at least one lead so it can be started.
 async function addLeadsDirectToCampaign(apiKey, linkedinAccountUuid, campaignUuid, leads) {
   const prospectData = buildProspectData(leads);
