@@ -177,6 +177,7 @@ async function runMigration(config, emit) {
     duplicateLeads: [], // leads skipped because profile URL already imported
     leadsSkippedDuplicate: 0,
     pausedProspects: [], // prospects paused in Salesrobot (were paused in Skylead)
+    prospectsIdentifierType2: 0, // unique prospects having a type-2 (Sales Navigator) identifier
   };
 
   for (const mapping of accountMappings) {
@@ -396,6 +397,11 @@ async function migrateCampaign({
     }
 
     seenKeys.add(identity.dedupeKey);
+
+    if ((lead.profileIdentifiers || []).some(p => p.identityTypeId === 2)) {
+      summary.prospectsIdentifierType2++;
+    }
+
     return {
       ...lead,
       _resolvedUrl: identity.url,

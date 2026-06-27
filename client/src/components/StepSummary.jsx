@@ -60,6 +60,7 @@ export default function StepSummary({ summary, onReset }) {
     leadsSkippedDuplicate = 0,
     prospectsPaused = 0,
     pausedProspects = [],
+    prospectsIdentifierType2 = 0,
   } = summary;
 
   return (
@@ -110,6 +111,10 @@ export default function StepSummary({ summary, onReset }) {
             )}
           </div>
         )}
+        <div className="stat-card green">
+          <div className="num">{prospectsIdentifierType2}</div>
+          <div className="label">Prospects with Sales Navigator identifier (type 2)</div>
+        </div>
         {prospectsPaused > 0 && (
           <div className="stat-card green" style={{ position: 'relative' }}>
             <div className="num">{prospectsPaused}</div>
