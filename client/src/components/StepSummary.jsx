@@ -34,6 +34,17 @@ function downloadDuplicateCSV(duplicateLeads) {
   );
 }
 
+function downloadPausedCSV(pausedProspects) {
+  downloadCSV(
+    'paused-prospects.csv',
+    ['Campaign', 'Prospect UUID', 'Profile URL', 'First Name', 'Last Name', 'Full Name', 'Email', 'Company', 'LinkedIn URL (raw)'],
+    pausedProspects.map(p => [
+      p.campaignName, p.prospectUuid, p.profileUrl,
+      p.firstName, p.lastName, p.fullName, p.email, p.company, p.linkedinUrl,
+    ]),
+  );
+}
+
 export default function StepSummary({ summary, onReset }) {
   if (!summary) return null;
 
@@ -47,6 +58,8 @@ export default function StepSummary({ summary, onReset }) {
     skippedLeads = [],
     duplicateLeads = [],
     leadsSkippedDuplicate = 0,
+    prospectsPaused = 0,
+    pausedProspects = [],
   } = summary;
 
   return (
@@ -91,6 +104,20 @@ export default function StepSummary({ summary, onReset }) {
               <button
                 onClick={() => downloadDuplicateCSV(duplicateLeads)}
                 style={{ marginTop: 10, fontSize: 12, padding: '4px 10px', cursor: 'pointer', border: '1px solid #d97706', borderRadius: 6, background: 'transparent', color: '#d97706', fontWeight: 600 }}
+              >
+                ↓ Download CSV
+              </button>
+            )}
+          </div>
+        )}
+        {prospectsPaused > 0 && (
+          <div className="stat-card green" style={{ position: 'relative' }}>
+            <div className="num">{prospectsPaused}</div>
+            <div className="label">Prospects paused (paused in Skylead)</div>
+            {pausedProspects.length > 0 && (
+              <button
+                onClick={() => downloadPausedCSV(pausedProspects)}
+                style={{ marginTop: 10, fontSize: 12, padding: '4px 10px', cursor: 'pointer', border: '1px solid #16a34a', borderRadius: 6, background: 'transparent', color: '#16a34a', fontWeight: 600 }}
               >
                 ↓ Download CSV
               </button>

@@ -176,6 +176,7 @@ async function runMigration(config, emit) {
     skippedLeads: [], // leads with no resolvable LinkedIn URL or email (when email allowed)
     duplicateLeads: [], // leads skipped because profile URL already imported
     leadsSkippedDuplicate: 0,
+    pausedProspects: [], // prospects paused in Salesrobot (were paused in Skylead)
   };
 
   for (const mapping of accountMappings) {
@@ -665,18 +666,18 @@ async function migrateCampaign({
   // --- Phase: Pause prospects that were paused in Skylead (lead.active === false) ---
   // Match on the basic /in/ member id (what Salesrobot stores) and email, since the
   // import identity uses the Sales Navigator URL which Salesrobot does not echo back.
-  const pausedKeys = new Set();
+  const pausedByKey = new Map();
   let pausedLeadCount = 0;
   for (const { valid } of leadsByOrdinal.values()) {
     for (const lead of valid) {
       if (!lead._paused) continue;
       pausedLeadCount++;
-      if (lead._matchKey) pausedKeys.add(lead._matchKey);
-      if (lead._resolvedEmail) pausedKeys.add(`email:${lead._resolvedEmail.toLowerCase()}`);
+      if (lead._matchKey) pausedByKey.set(lead._matchKey, lead);
+      if (lead._resolvedEmail) pausedByKey.set(`email:${lead._resolvedEmail.toLowerCase()}`, lead);
     }
   }
 
-  if (pausedKeys.size > 0) {
+  if (pausedLeadCount > 0) {
     emit('log', { message: `[pause-prospects] ${pausedLeadCount} prospect(s) paused in Skylead — locating them in Salesrobot...` });
 
     try {
@@ -691,7 +692,9 @@ async function migrateCampaign({
         emit('log', { message: `[pause-prospects] [debug] sample prospect keys: ${Object.keys(prospects[0]).join(', ')}` });
       }
 
-      const matchedUuids = [];
+      // Match Salesrobot prospects to paused Skylead leads, keeping both the
+      // prospect uuid (to pause) and a CSV row (recorded only once paused OK).
+      const matched = [];
       for (const p of prospects) {
         const uuid = p.uuid || p.prospectUuid;
         if (!uuid) continue;
@@ -700,31 +703,47 @@ async function migrateCampaign({
         const email = (p.linkedinEmailId || p.emailId || p.email || '').trim().toLowerCase();
         const emailKey = email ? `email:${email}` : '';
 
-        if ((urlKey && pausedKeys.has(urlKey)) || (emailKey && pausedKeys.has(emailKey))) {
-          matchedUuids.push(uuid);
+        const lead = (urlKey && pausedByKey.get(urlKey)) || (emailKey && pausedByKey.get(emailKey));
+        if (lead) {
+          matched.push({
+            uuid,
+            row: {
+              campaignName: campaign.name,
+              prospectUuid: uuid,
+              profileUrl: p.profileUrl || p.linkedinUrl || '',
+              firstName: lead.firstName || '',
+              lastName: lead.lastName || '',
+              fullName: lead.fullName || lead.allFieldsData?.full_name || '',
+              email: lead._resolvedEmail || resolveLeadEmail(lead) || '',
+              company: lead.company || lead.allFieldsData?.currentCompany || '',
+              linkedinUrl: lead.linkedinUrl || '',
+            },
+          });
         }
       }
 
-      emit('log', { message: `[pause-prospects] Matched ${matchedUuids.length}/${pausedLeadCount} paused prospect(s) to Salesrobot uuids` });
+      emit('log', { message: `[pause-prospects] Matched ${matched.length}/${pausedLeadCount} paused prospect(s) to Salesrobot uuids` });
 
       const BATCH_SIZE = 100;
       let pausedCount = 0;
-      for (let i = 0; i < matchedUuids.length; i += BATCH_SIZE) {
-        const batch = matchedUuids.slice(i, i + BATCH_SIZE);
+      for (let i = 0; i < matched.length; i += BATCH_SIZE) {
+        const batch = matched.slice(i, i + BATCH_SIZE);
+        const uuids = batch.map(m => m.uuid);
         try {
-          await pauseProspects(salesrobotApiKey, salesrobotLinkedinAccountUuid, srCampaignUuid, batch);
-          pausedCount += batch.length;
-          emit('log', { message: `[pause-prospects] Paused ${pausedCount}/${matchedUuids.length} prospect(s)` });
+          await pauseProspects(salesrobotApiKey, salesrobotLinkedinAccountUuid, srCampaignUuid, uuids);
+          pausedCount += uuids.length;
+          for (const m of batch) summary.pausedProspects.push(m.row);
+          emit('log', { message: `[pause-prospects] Paused ${pausedCount}/${matched.length} prospect(s)` });
         } catch (err) {
-          result.phaseErrors.push({ phase: 'pause-prospects', message: `Failed to pause batch of ${batch.length} prospect(s): ${err.message}` });
+          result.phaseErrors.push({ phase: 'pause-prospects', message: `Failed to pause batch of ${uuids.length} prospect(s): ${err.message}` });
           emit('log', { message: `[pause-prospects] WARNING: Failed to pause batch — ${err.message}. Continuing...` });
         }
       }
 
       summary.prospectsPaused += pausedCount;
 
-      if (matchedUuids.length < pausedLeadCount) {
-        emit('log', { message: `[pause-prospects] ⚠ ${pausedLeadCount - matchedUuids.length} paused Skylead lead(s) had no matching Salesrobot prospect (e.g. Sales-Nav-only leads with no /in/ id, email-only leads, or not yet imported)` });
+      if (matched.length < pausedLeadCount) {
+        emit('log', { message: `[pause-prospects] ⚠ ${pausedLeadCount - matched.length} paused Skylead lead(s) had no matching Salesrobot prospect (e.g. Sales-Nav-only leads with no /in/ id, email-only leads, or not yet imported)` });
       }
     } catch (err) {
       result.phaseErrors.push({ phase: 'pause-prospects', message: `Failed to pause prospects: ${err.message}` });
