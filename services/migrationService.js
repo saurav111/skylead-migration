@@ -68,6 +68,31 @@ function resolveLeadLinkedInUrl(lead) {
   return (lead.linkedinUrl || '').trim();
 }
 
+// Resolves the lead's BASIC LinkedIn (/in/<memberId>) URL specifically. Salesrobot
+// stores prospects in the /in/ form, whereas resolveLeadLinkedInUrl prefers the
+// Sales Navigator (/sales/people/<navId>) URL — a different identifier namespace.
+// So pause-matching must key off the /in/ identifier, not the Sales Nav one.
+function resolveBasicLinkedInUrl(lead) {
+  const identifiers = lead.profileIdentifiers || [];
+
+  const basicId = identifiers.find(p => p.identityTypeId === 1);
+  if (basicId?.identifier?.trim()) {
+    const id = basicId.identifier.trim();
+    return id.startsWith('http') ? id : `https://www.linkedin.com/in/${id}`;
+  }
+
+  return (lead.linkedinUrl || '').trim();
+}
+
+// Extracts the canonical /in/ member id from a LinkedIn URL for cross-tool
+// matching (e.g. "https://www.linkedin.com/in/ACwAAA..." -> "acwaaa..."). Returns
+// '' for non-/in/ URLs (such as Sales Navigator /sales/people/ links).
+function linkedInMatchKey(url) {
+  if (!url || typeof url !== 'string') return '';
+  const m = url.trim().toLowerCase().match(/linkedin\.com\/in\/([^/?#]+)/);
+  return m ? m[1] : '';
+}
+
 function resolveLeadIdentity(lead, allowEmailOnly) {
   const url = resolveLeadLinkedInUrl(lead);
   const email = resolveLeadEmail(lead);
@@ -122,6 +147,8 @@ const {
   addRunnerAccounts,
   startCampaign,
   pauseCampaign,
+  getCampaignProspects,
+  pauseProspects,
   createLeadListFromCSV,
   addLeadListToCampaign,
   addLeadsDirectToCampaign,
@@ -141,6 +168,7 @@ async function runMigration(config, emit) {
   const summary = {
     campaignsCreated: 0,
     leadsImported: 0,
+    prospectsPaused: 0,
     leadsSkippedNoUrl: 0,
     leadsSkippedReplied: 0,
     branchesDropped: 0,
@@ -372,6 +400,10 @@ async function migrateCampaign({
       _resolvedUrl: identity.url,
       _resolvedEmail: identity.email,
       _emailOnly: identity.emailOnly,
+      // Match key for pausing: the basic /in/ member id (what Salesrobot stores),
+      // NOT the Sales Navigator URL used as the import/dedupe identity.
+      _matchKey: linkedInMatchKey(resolveBasicLinkedInUrl(lead)),
+      _paused: lead.active === false,
     };
   }
 
@@ -627,6 +659,76 @@ async function migrateCampaign({
     } catch (err) {
       result.phaseErrors.push({ phase: `import-step-${stepOrdinal}`, message: `Failed to import ${valid.length} lead(s) at step ${stepOrdinal}: ${err.message}` });
       emit('log', { message: `[import] WARNING: Failed to import leads at step ${stepOrdinal} — ${err.message}. Skipping.` });
+    }
+  }
+
+  // --- Phase: Pause prospects that were paused in Skylead (lead.active === false) ---
+  // Match on the basic /in/ member id (what Salesrobot stores) and email, since the
+  // import identity uses the Sales Navigator URL which Salesrobot does not echo back.
+  const pausedKeys = new Set();
+  let pausedLeadCount = 0;
+  for (const { valid } of leadsByOrdinal.values()) {
+    for (const lead of valid) {
+      if (!lead._paused) continue;
+      pausedLeadCount++;
+      if (lead._matchKey) pausedKeys.add(lead._matchKey);
+      if (lead._resolvedEmail) pausedKeys.add(`email:${lead._resolvedEmail.toLowerCase()}`);
+    }
+  }
+
+  if (pausedKeys.size > 0) {
+    emit('log', { message: `[pause-prospects] ${pausedLeadCount} prospect(s) paused in Skylead — locating them in Salesrobot...` });
+
+    try {
+      await sleep(3000); // let imported prospects register in the campaign
+
+      const prospects = await getCampaignProspects(
+        salesrobotApiKey, srCampaignUuid, salesrobotLinkedinAccountUuid
+      );
+      emit('log', { message: `[pause-prospects] Fetched ${prospects.length} prospect(s) from campaign` });
+
+      if (prospects.length > 0) {
+        emit('log', { message: `[pause-prospects] [debug] sample prospect keys: ${Object.keys(prospects[0]).join(', ')}` });
+      }
+
+      const matchedUuids = [];
+      for (const p of prospects) {
+        const uuid = p.uuid || p.prospectUuid;
+        if (!uuid) continue;
+
+        const urlKey = linkedInMatchKey(p.profileUrl || p.linkedinUrl || '');
+        const email = (p.linkedinEmailId || p.emailId || p.email || '').trim().toLowerCase();
+        const emailKey = email ? `email:${email}` : '';
+
+        if ((urlKey && pausedKeys.has(urlKey)) || (emailKey && pausedKeys.has(emailKey))) {
+          matchedUuids.push(uuid);
+        }
+      }
+
+      emit('log', { message: `[pause-prospects] Matched ${matchedUuids.length}/${pausedLeadCount} paused prospect(s) to Salesrobot uuids` });
+
+      const BATCH_SIZE = 100;
+      let pausedCount = 0;
+      for (let i = 0; i < matchedUuids.length; i += BATCH_SIZE) {
+        const batch = matchedUuids.slice(i, i + BATCH_SIZE);
+        try {
+          await pauseProspects(salesrobotApiKey, salesrobotLinkedinAccountUuid, srCampaignUuid, batch);
+          pausedCount += batch.length;
+          emit('log', { message: `[pause-prospects] Paused ${pausedCount}/${matchedUuids.length} prospect(s)` });
+        } catch (err) {
+          result.phaseErrors.push({ phase: 'pause-prospects', message: `Failed to pause batch of ${batch.length} prospect(s): ${err.message}` });
+          emit('log', { message: `[pause-prospects] WARNING: Failed to pause batch — ${err.message}. Continuing...` });
+        }
+      }
+
+      summary.prospectsPaused += pausedCount;
+
+      if (matchedUuids.length < pausedLeadCount) {
+        emit('log', { message: `[pause-prospects] ⚠ ${pausedLeadCount - matchedUuids.length} paused Skylead lead(s) had no matching Salesrobot prospect (e.g. Sales-Nav-only leads with no /in/ id, email-only leads, or not yet imported)` });
+      }
+    } catch (err) {
+      result.phaseErrors.push({ phase: 'pause-prospects', message: `Failed to pause prospects: ${err.message}` });
+      emit('log', { message: `[pause-prospects] WARNING: Failed to pause prospects — ${err.message}.` });
     }
   }
 

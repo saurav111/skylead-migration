@@ -150,6 +150,53 @@ async function pauseCampaign(apiKey, campaignUuid, linkedinAccountUuid) {
   );
 }
 
+async function getCampaignProspects(apiKey, campaignUuid, linkedinAccountUuid) {
+  const all = [];
+  let page = 1;
+  const size = 100;
+
+  while (true) {
+    const resp = await req(() =>
+      client(apiKey, { timeout: 120_000 }).get('/campaign/prospects', {
+        params: { campaignUuid, sort: 'createdTime,desc', page, size, linkedinAccountUuid },
+      })
+    );
+    const result = resp.data?.data;
+    const items = result?.data || [];
+    all.push(...items);
+    if (page >= (result?.totalPages || 1) || items.length === 0) break;
+    page++;
+  }
+
+  return all;
+}
+
+async function pauseProspects(apiKey, linkedinAccountUuid, campaignUuid, prospectUuids) {
+  await req(() =>
+    client(apiKey, { timeout: 120_000 }).post(
+      `/campaign/pauseMultiple?linkedinAccountUuid=${linkedinAccountUuid}`,
+      {
+        selectedProspectUuids: prospectUuids,
+        allSelected: false,
+        pause: true,
+        campaignUuids: [campaignUuid],
+        lastActivityListOrg: [],
+        sequenceSteps: [],
+        blacklisted: null,
+        premiumOnly: null,
+        emailAvailable: null,
+        executableStatusList: [],
+        jobTitles: null,
+        companyNames: null,
+        unwantedTags: null,
+        searchedTags: null,
+        page: 1,
+        size: prospectUuids.length,
+      }
+    )
+  );
+}
+
 async function createLeadListFromCSV(apiKey, name, leads) {
   const prospectData = buildProspectData(leads);
   const resp = await req(() =>
@@ -214,6 +261,8 @@ module.exports = {
   addRunnerAccounts,
   startCampaign,
   pauseCampaign,
+  getCampaignProspects,
+  pauseProspects,
   createLeadListFromCSV,
   addLeadListToCampaign,
   addLeadsDirectToCampaign,
