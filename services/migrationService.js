@@ -141,6 +141,7 @@ function recordDuplicateLead(summary, campaignName, lead, profileUrl, stepOrdina
 
 const {
   createCampaign,
+  updateCampaignConfig,
   createEmailCampaign,
   addSequenceSteps,
   addSequenceStepsNylas,
@@ -335,6 +336,18 @@ async function migrateCampaign({
     result.aborted = true;
     result.phaseErrors.push({ phase: 'create-campaign', message: `Failed to create campaign in Salesrobot: ${err.message}` });
     return result;
+  }
+
+  // --- Phase: Set campaign config (acceptedConnectionLevels = 1st,2nd,3rd) ---
+  emit('log', { message: `[config] Setting acceptedConnectionLevels to 1st,2nd,3rd...` });
+  try {
+    await updateCampaignConfig(
+      salesrobotApiKey, salesrobotLinkedinAccountUuid, srCampaignUuid, campaign.name
+    );
+    emit('log', { message: `[config] Campaign config updated OK` });
+  } catch (err) {
+    result.phaseErrors.push({ phase: 'update-config', message: `Failed to update campaign config: ${err.message}` });
+    emit('log', { message: `[config] WARNING: Failed to update campaign config — ${err.message}. Continuing...` });
   }
 
   // --- Phase: Link email account ---

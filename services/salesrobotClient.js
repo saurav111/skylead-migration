@@ -87,6 +87,26 @@ async function createCampaign(apiKey, linkedinAccountUuid, name, campaignFamily 
   return typeof d === 'string' ? d : d?.uuid || d?.campaignUuid;
 }
 
+// Sets the campaign config right after creation. Only acceptedConnectionLevels is
+// changed (to 1st,2nd,3rd); the rest mirror the defaults a freshly created campaign
+// has, so all other data stays the same as the created campaign.
+async function updateCampaignConfig(apiKey, linkedinAccountUuid, campaignUuid, campaignName) {
+  await req(() =>
+    client(apiKey).post(`/campaign/update-config?linkedinAccountUuid=${linkedinAccountUuid}`, {
+      campaignUuid,
+      name: campaignName,
+      dontAddIfInAnotherLinkedinAccountForMyUser: true,
+      acceptedConnectionLevels: '1st,2nd,3rd',
+      premiumOnly: false,
+      openInmailDiscover: false,
+      enrichData: false,
+      fetchAllAtOnce: false,
+      aiFilterEnabled: false,
+      aiFilterId: null,
+    })
+  );
+}
+
 async function createEmailCampaign(apiKey, nylasAccountUuid, name) {
   const resp = await req(() =>
     client(apiKey).post(`/campaign/nylas?nylasAccountUuid=${nylasAccountUuid}`, {
@@ -255,6 +275,7 @@ module.exports = {
   getLinkedinAccounts,
   getEmailAccounts,
   createCampaign,
+  updateCampaignConfig,
   createEmailCampaign,
   addSequenceSteps,
   addSequenceStepsNylas,
