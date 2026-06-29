@@ -659,10 +659,11 @@ async function migrateCampaign({
 
   // --- Phase: Import leads via lead lists ---
   // leadsByOrdinal keys are 0-based step ordinals (matching the sequence DTO
-  // stepOrdinal). The lead-list import API's startingStepOrdinal is 1-based
-  // (must be >= 1), so convert with + 1. For 0th-step prospects, omit it entirely.
+  // stepOrdinal), and Salesrobot's startingStepOrdinal uses that same index — so
+  // pass it through unchanged. For 0th-step prospects, omit it entirely (the API
+  // requires >= 1, and omitting it lands them at step 0).
   for (const [stepOrdinal, { step, valid }] of leadsByOrdinal) {
-    const startingStepOrdinal = stepOrdinal === 0 ? undefined : stepOrdinal + 1;
+    const startingStepOrdinal = stepOrdinal === 0 ? undefined : stepOrdinal;
     const ordinalLabel = startingStepOrdinal == null ? 'none' : startingStepOrdinal;
     emit('log', { message: `[import] Importing ${valid.length} lead(s) at step ${stepOrdinal} (startingStepOrdinal=${ordinalLabel}) via lead list...` });
 
