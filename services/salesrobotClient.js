@@ -248,6 +248,17 @@ async function addLeadsDirectToCampaign(apiKey, linkedinAccountUuid, campaignUui
   );
 }
 
+// Adds company names / profile URLs to a LinkedIn account's blocklist.
+// The DTO is a delta: companyNames/profileUrls/emails are added, removedEmails removed.
+async function updateBlacklist(apiKey, linkedinAccountUuid, { companyNames = [], profileUrls = [], emails = [], removedEmails = [], tag = '' } = {}) {
+  await req(() =>
+    client(apiKey, { timeout: 120_000 }).post(
+      `/blacklist/update?linkedinAccountUuid=${linkedinAccountUuid}`,
+      { tag, companyNames, profileUrls, emails, removedEmails }
+    )
+  );
+}
+
 // Converts flat lead array to Salesrobot's columnar prospectData format
 function buildProspectData(leads) {
   const fields = [
@@ -287,4 +298,5 @@ module.exports = {
   createLeadListFromCSV,
   addLeadListToCampaign,
   addLeadsDirectToCampaign,
+  updateBlacklist,
 };

@@ -3,6 +3,7 @@ const router = express.Router();
 const { getMe, getSeats, getCampaigns, getCampaignDetails, flattenSteps, detectCampaignFamily } = require('../services/skyleadClient');
 const { getLinkedinAccounts, getEmailAccounts } = require('../services/salesrobotClient');
 const { runMigration } = require('../services/migrationService');
+const { runBlacklistImport } = require('../services/blacklistService');
 
 // POST /api/connect — validate both keys, auto-fetch userId + seats + SR accounts
 router.post('/connect', async (req, res) => {
@@ -129,6 +130,46 @@ router.post('/migrate/stream', async (req, res) => {
     emit('complete', { summary });
   } catch (err) {
     console.error('[migration] fatal:', err.message);
+    emit('error', { message: err.message });
+  } finally {
+    clearInterval(heartbeat);
+    res.end();
+  }
+});
+
+// POST /api/blacklist/stream — SSE blacklist import stream
+router.post('/blacklist/stream', async (req, res) => {
+  const { skyLeadApiKey, skyLeadUserId, salesrobotApiKey, accountMappings, skyleadCookie } = req.body;
+
+  if (!skyLeadApiKey || !skyLeadUserId || !salesrobotApiKey || !accountMappings?.length) {
+    return res.status(400).json({ error: 'Incomplete blacklist import config' });
+  }
+  if (!skyleadCookie) {
+    return res.status(400).json({ error: 'Skylead session cookie is required to read the blacklist' });
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+
+  const heartbeat = setInterval(() => res.write(': heartbeat\n\n'), 15000);
+
+  function emit(type, data = {}) {
+    const isError = type === 'error';
+    const logLine = data.message || data.seat || type;
+    if (isError) console.error(`[blacklist] ${type}:`, logLine);
+    else console.log(`[blacklist] ${type}:`, logLine);
+    res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
+  }
+
+  try {
+    const summary = await runBlacklistImport(req.body, emit);
+    console.log('[blacklist] complete:', JSON.stringify(summary));
+    emit('complete', { summary });
+  } catch (err) {
+    console.error('[blacklist] fatal:', err.message);
     emit('error', { message: err.message });
   } finally {
     clearInterval(heartbeat);

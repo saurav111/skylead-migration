@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-export default function StepAccountMapping({ seats, srAccounts, onBack, onDone }) {
+export default function StepAccountMapping({ seats, srAccounts, onBack, onDone, nextLabel = 'Next: Select campaigns →' }) {
   const [mappings, setMappings] = useState(
     seats.map(seat => ({ skyLeadAccountId: String(seat.id), salesrobotLinkedinAccountUuid: '' }))
   );
@@ -56,10 +56,10 @@ export default function StepAccountMapping({ seats, srAccounts, onBack, onDone }
         </div>
       ))}
 
-      <div className="btn-row">
-        <button className="btn btn-secondary" onClick={onBack}>← Back</button>
+      <div className="btn-row" style={onBack ? undefined : { justifyContent: 'flex-end' }}>
+        {onBack && <button className="btn btn-secondary" onClick={onBack}>← Back</button>}
         <button className="btn btn-primary" onClick={handleNext}>
-          Next: Select campaigns →
+          {nextLabel}
         </button>
       </div>
     </div>

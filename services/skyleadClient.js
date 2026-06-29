@@ -1,12 +1,32 @@
 const axios = require('axios');
 
 const BASE = 'https://api.multilead.io/api/open-api/v1';
+const BASE_V2 = 'https://api.multilead.io/api/open-api/v2';
+
+// Default host for the Skylead/Multilead web app's internal backend (white-labeled
+// per account, e.g. app.expertleads.io). Used for blacklist reads, which the public
+// Open API key cannot access (returns 403 "Insufficient permissions").
+const APP_BASE = 'https://app.expertleads.io';
 
 function client(apiKey, opts = {}) {
   return axios.create({
-    baseURL: BASE,
+    baseURL: opts.base || BASE,
     timeout: opts.timeout ?? 60_000,
     headers: { Authorization: apiKey },
+  });
+}
+
+// Client for the app's internal backend, authenticated with the user's browser
+// session cookie instead of the Open API key.
+function appClient(cookie, base, opts = {}) {
+  return axios.create({
+    baseURL: `${(base || APP_BASE).replace(/\/+$/, '')}/api/backend/v1`,
+    timeout: opts.timeout ?? 60_000,
+    headers: {
+      Cookie: cookie,
+      Accept: 'application/json, text/plain, */*',
+      'User-Agent': 'Mozilla/5.0',
+    },
   });
 }
 
@@ -129,6 +149,121 @@ async function getLeadsForStep(apiKey, userId, accountId, campaignId, stepId) {
   return all;
 }
 
+// Fetches every lead in a campaign regardless of which step they're on.
+// Used by the blacklist importer to resolve blacklisted full names → profile URLs.
+async function getCampaignLeads(apiKey, userId, accountId, campaignId, onLog) {
+  const all = [];
+  let offset = 0;
+  const limit = 10000;
+
+  // Logs to both the server console and (if provided) the UI log stream.
+  const log = (msg) => {
+    console.log(msg);
+    if (typeof onLog === 'function') onLog(msg);
+  };
+
+  log(`[leads] start — account ${accountId}, campaign ${campaignId}`);
+
+  while (true) {
+    const t0 = Date.now();
+    const resp = await withRetry(() =>
+      client(apiKey).get(`/users/${userId}/accounts/${accountId}/campaigns/${campaignId}/leads`, {
+        params: { limit, offset },
+      })
+    );
+    const result = resp.data.result;
+    const items = result?.items || [];
+    all.push(...items);
+    const total = result?.count ?? all.length;
+    log(`[leads] campaign ${campaignId}: page offset=${offset} → +${items.length} (total ${all.length}/${total}) in ${Date.now() - t0}ms`);
+    if (all.length >= total || items.length < limit) break;
+    offset += limit;
+    // await sleep(250);
+  }
+
+  log(`[leads] done — campaign ${campaignId}: ${all.length} lead(s)`);
+  return all;
+}
+
+// --- Blacklist (Open API v2) ---
+// Returns the blacklist groups for a seat. Each group is keyed by type
+// (company_name | profile_url | full_name | email | domain | job_title) and a
+// comparisonType (exact | contains | starts_with | ends_with). The actual values
+// live in the keywords sub-resource (getBlacklistKeywords).
+async function getBlacklists(apiKey, userId, accountId) {
+  const all = [];
+  let offset = 0;
+  const limit = 50;
+
+  while (true) {
+    const resp = await withRetry(() =>
+      client(apiKey, { base: BASE_V2 }).get(
+        `/users/${userId}/accounts/${accountId}/blacklists/list`,
+        { params: { offset, limit } }
+      )
+    );
+    const data = resp.data?.data;
+    const items = data?.blacklists || [];
+    all.push(...items);
+    const count = data?.count ?? all.length;
+    if (all.length >= count || items.length < limit) break;
+    offset += limit;
+  }
+
+  return all;
+}
+
+// Returns the keyword strings belonging to a single blacklist group.
+async function getBlacklistKeywords(apiKey, userId, accountId, blacklistId) {
+  const all = [];
+  let offset = 0;
+  const limit = 100;
+
+  while (true) {
+    const resp = await withRetry(() =>
+      client(apiKey, { base: BASE_V2 }).get(
+        `/users/${userId}/accounts/${accountId}/blacklists/${blacklistId}/keywords`,
+        { params: { offset, limit } }
+      )
+    );
+    const data = resp.data?.data;
+    const items = data?.keywords || [];
+    all.push(...items.map(k => k.keyword).filter(Boolean));
+    const total = data?.pagination?.total ?? data?.count ?? all.length;
+    if (all.length >= total || items.length < limit) break;
+    offset += limit;
+  }
+
+  return all;
+}
+
+// Fetches the LinkedIn blacklist for a seat via the app's internal backend (cookie
+// auth). Each row is already a flattened keyword: { blacklistId, type, comparisonType,
+// keyword, ... }, so no separate keywords call is needed.
+async function getLinkedinBlacklist({ cookie, appBase, userId, accountId, onPage }) {
+  const all = [];
+  let offset = 0;
+  const limit = 10000;
+
+  while (true) {
+    const resp = await withRetry(() =>
+      appClient(cookie, appBase).get(
+        `/users/${userId}/accounts/${accountId}/blacklists/linkedin`,
+        { params: { limit, offset } }
+      )
+    );
+    const inner = resp.data?.result?.result || resp.data?.result || {};
+    const items = inner.blacklists || [];
+    all.push(...items);
+    const count = inner.count ?? all.length;
+    if (typeof onPage === 'function') onPage(all.length, count);
+    if (all.length >= count || items.length < limit) break;
+    offset += limit;
+  }
+
+  return all;
+}
+
 // Flattens Skylead's tree sequence into a linear list by following the step ordinal.
 // Detects branch steps two ways:
 //   1. nextSteps with previousStepResult !== 'SUCCESS'
@@ -206,4 +341,4 @@ function detectCampaignFamily(steps) {
   return 'HYBRID';
 }
 
-module.exports = { getMe, getSeats, getCampaigns, getCampaignDetails, getLeadsForStep, flattenSteps, mapStepType, detectCampaignFamily };
+module.exports = { getMe, getSeats, getCampaigns, getCampaignDetails, getLeadsForStep, getCampaignLeads, getBlacklists, getBlacklistKeywords, getLinkedinBlacklist, flattenSteps, mapStepType, detectCampaignFamily };

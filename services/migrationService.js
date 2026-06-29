@@ -773,4 +773,4 @@ async function migrateCampaign({
   return result;
 }
 
-module.exports = { runMigration };
+module.exports = { runMigration, resolveLeadLinkedInUrl, resolveBasicLinkedInUrl, resolveLeadEmail };
