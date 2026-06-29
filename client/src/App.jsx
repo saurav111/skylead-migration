@@ -5,6 +5,7 @@ import StepCampaignSelect from './components/StepCampaignSelect';
 import StepProgress from './components/StepProgress';
 import StepSummary from './components/StepSummary';
 import BlacklistTab from './components/BlacklistTab';
+import PausedProspectsTab from './components/PausedProspectsTab';
 
 const CAMPAIGN_STEPS = ['Map Accounts', 'Select Campaigns', 'Migrate', 'Done'];
 
@@ -80,6 +81,12 @@ export default function App() {
             >
               Blacklist Import
             </button>
+            <button
+              className={`tab ${activeTab === 'paused' ? 'active' : ''}`}
+              onClick={() => setActiveTab('paused')}
+            >
+              Paused Prospects
+            </button>
           </div>
 
           {activeTab === 'campaigns' && (
@@ -137,6 +144,14 @@ export default function App() {
 
           {activeTab === 'blacklist' && (
             <BlacklistTab
+              credentials={credentials}
+              seats={seats}
+              srAccounts={srAccounts}
+            />
+          )}
+
+          {activeTab === 'paused' && (
+            <PausedProspectsTab
               credentials={credentials}
               seats={seats}
               srAccounts={srAccounts}

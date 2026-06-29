@@ -170,6 +170,50 @@ async function pauseCampaign(apiKey, campaignUuid, linkedinAccountUuid) {
   );
 }
 
+// Lists all campaigns for a LinkedIn account (used to find campaigns by name).
+// The /campaigns endpoint 500s ("Error in listing campaigns") when given a sort
+// property the campaign entity doesn't have (e.g. createdTime), so we probe a few
+// param shapes on the first page and reuse whichever one the server accepts.
+async function getCampaignsList(apiKey, linkedinAccountUuid) {
+  const size = 100;
+  const baseParams = { linkedinAccountUuid, size };
+  const variants = [
+    { ...baseParams }, // no sort — let the server use its default
+    { ...baseParams, sort: 'id,desc' },
+    { ...baseParams, sort: 'createdTime,desc' },
+  ];
+
+  const fetchPage = (params) =>
+    req(() => client(apiKey, { timeout: 120_000 }).get('/campaigns', { params }));
+
+  // Find a param shape the server accepts (page 1).
+  let working = null;
+  let firstResult = null;
+  let lastErr = null;
+  for (const v of variants) {
+    try {
+      const resp = await fetchPage({ ...v, page: 1 });
+      working = v;
+      firstResult = resp.data?.data;
+      break;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  if (!working) throw lastErr;
+
+  const all = [...(firstResult?.data || [])];
+  const totalPages = firstResult?.totalPages || 1;
+  for (let page = 2; page <= totalPages; page++) {
+    const resp = await fetchPage({ ...working, page });
+    const items = resp.data?.data?.data || [];
+    all.push(...items);
+    if (items.length === 0) break;
+  }
+
+  return all;
+}
+
 async function getCampaignProspects(apiKey, campaignUuid, linkedinAccountUuid) {
   const all = [];
   let page = 1;
@@ -293,6 +337,7 @@ module.exports = {
   addRunnerAccounts,
   startCampaign,
   pauseCampaign,
+  getCampaignsList,
   getCampaignProspects,
   pauseProspects,
   createLeadListFromCSV,

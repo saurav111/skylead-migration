@@ -4,6 +4,7 @@ const { getMe, getSeats, getCampaigns, getCampaignDetails, flattenSteps, detectC
 const { getLinkedinAccounts, getEmailAccounts } = require('../services/salesrobotClient');
 const { runMigration } = require('../services/migrationService');
 const { runBlacklistImport } = require('../services/blacklistService');
+const { runPauseProspects } = require('../services/pauseProspectsService');
 
 // POST /api/connect — validate both keys, auto-fetch userId + seats + SR accounts
 router.post('/connect', async (req, res) => {
@@ -170,6 +171,43 @@ router.post('/blacklist/stream', async (req, res) => {
     emit('complete', { summary });
   } catch (err) {
     console.error('[blacklist] fatal:', err.message);
+    emit('error', { message: err.message });
+  } finally {
+    clearInterval(heartbeat);
+    res.end();
+  }
+});
+
+// POST /api/pause-prospects/stream — SSE: pause Skylead-paused leads in matching SR campaigns
+router.post('/pause-prospects/stream', async (req, res) => {
+  const { skyLeadApiKey, skyLeadUserId, salesrobotApiKey, accountMappings } = req.body;
+
+  if (!skyLeadApiKey || !skyLeadUserId || !salesrobotApiKey || !accountMappings?.length) {
+    return res.status(400).json({ error: 'Incomplete pause-prospects config' });
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+
+  const heartbeat = setInterval(() => res.write(': heartbeat\n\n'), 15000);
+
+  function emit(type, data = {}) {
+    const isError = type === 'error';
+    const logLine = data.message || data.seat || data.name || type;
+    if (isError) console.error(`[pause-prospects] ${type}:`, logLine);
+    else console.log(`[pause-prospects] ${type}:`, logLine);
+    res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
+  }
+
+  try {
+    const summary = await runPauseProspects(req.body, emit);
+    console.log('[pause-prospects] complete:', JSON.stringify(summary));
+    emit('complete', { summary });
+  } catch (err) {
+    console.error('[pause-prospects] fatal:', err.message);
     emit('error', { message: err.message });
   } finally {
     clearInterval(heartbeat);
