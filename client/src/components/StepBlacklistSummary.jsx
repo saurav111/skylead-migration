@@ -29,6 +29,8 @@ export default function StepBlacklistSummary({ summary, onReset }) {
     accountsProcessed = 0,
     companyNamesImported = 0,
     profileUrlsImported = 0,
+    emailsImported = 0,
+    domainsImported = 0,
     fullNamesMatched = 0,
     fullNamesUnmatched = 0,
     unsupportedSkipped = 0,
@@ -37,6 +39,8 @@ export default function StepBlacklistSummary({ summary, onReset }) {
     unsupportedTypes = [],
     companyNamesList = [],
     profileUrlsList = [],
+    emailsList = [],
+    domainsList = [],
     resolvedNames = [],
   } = summary;
 
@@ -44,7 +48,7 @@ export default function StepBlacklistSummary({ summary, onReset }) {
     <div className="card">
       <h2>Blacklist import complete</h2>
       <p className="subtitle">
-        Company names and profile URLs were added to the matching Salesrobot LinkedIn accounts' blocklist.
+        Company names, profile URLs, emails, and domains were added to the matching Salesrobot LinkedIn accounts' blocklist.
       </p>
 
       <div className="summary-grid">
@@ -60,6 +64,20 @@ export default function StepBlacklistSummary({ summary, onReset }) {
           <div className="label">Profile URLs imported</div>
           {profileUrlsList.length > 0 && (
             <DownloadBtn onClick={() => downloadCSV('imported-profile-urls.csv', ['Seat', 'Profile URL'], profileUrlsList.map(p => [p.seat, p.profileUrl]))} />
+          )}
+        </div>
+        <div className="stat-card green" style={{ position: 'relative' }}>
+          <div className="num">{emailsImported}</div>
+          <div className="label">Emails imported</div>
+          {emailsList.length > 0 && (
+            <DownloadBtn onClick={() => downloadCSV('imported-emails.csv', ['Seat', 'Email'], emailsList.map(e => [e.seat, e.email]))} />
+          )}
+        </div>
+        <div className="stat-card green" style={{ position: 'relative' }}>
+          <div className="num">{domainsImported}</div>
+          <div className="label">Domains imported</div>
+          {domainsList.length > 0 && (
+            <DownloadBtn onClick={() => downloadCSV('imported-domains.csv', ['Seat', 'Domain'], domainsList.map(d => [d.seat, d.domain]))} />
           )}
         </div>
         <div className="stat-card green" style={{ position: 'relative' }}>
@@ -105,7 +123,7 @@ export default function StepBlacklistSummary({ summary, onReset }) {
 
       {unsupportedSkipped > 0 && (
         <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: '12px 16px', marginBottom: 16, fontSize: 13, color: '#92400e' }}>
-          <strong>{unsupportedSkipped} entr(ies)</strong> used a keyword type Salesrobot's blocklist doesn't support (e.g. job title, email, domain) and were skipped. Salesrobot only blocks by company name or profile URL.
+          <strong>{unsupportedSkipped} entr(ies)</strong> used a keyword type Salesrobot's blocklist doesn't support (e.g. job title) and were skipped. Salesrobot blocks by company name, profile URL, email, and domain.
         </div>
       )}
 

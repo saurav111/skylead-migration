@@ -237,10 +237,12 @@ async function getBlacklistKeywords(apiKey, userId, accountId, blacklistId) {
   return all;
 }
 
-// Fetches the LinkedIn blacklist for a seat via the app's internal backend (cookie
-// auth). Each row is already a flattened keyword: { blacklistId, type, comparisonType,
+// Fetches a blacklist "tab" for a seat via the app's internal backend (cookie auth).
+// The app splits the blacklist across endpoints: `linkedin` (company_name, profile_url,
+// full_name, job_title) and `email` (email + domain — the "EMAIL_AND_DOMAIN" tab).
+// Each row is already a flattened keyword: { blacklistId, type, comparisonType,
 // keyword, ... }, so no separate keywords call is needed.
-async function getLinkedinBlacklist({ cookie, appBase, userId, accountId, onPage }) {
+async function getAppBlacklist({ cookie, appBase, userId, accountId, tab, onPage }) {
   const all = [];
   let offset = 0;
   const limit = 10000;
@@ -248,7 +250,7 @@ async function getLinkedinBlacklist({ cookie, appBase, userId, accountId, onPage
   while (true) {
     const resp = await withRetry(() =>
       appClient(cookie, appBase).get(
-        `/users/${userId}/accounts/${accountId}/blacklists/linkedin`,
+        `/users/${userId}/accounts/${accountId}/blacklists/${tab}`,
         { params: { limit, offset } }
       )
     );
@@ -262,6 +264,15 @@ async function getLinkedinBlacklist({ cookie, appBase, userId, accountId, onPage
   }
 
   return all;
+}
+
+function getLinkedinBlacklist({ cookie, appBase, userId, accountId, onPage }) {
+  return getAppBlacklist({ cookie, appBase, userId, accountId, tab: 'linkedin', onPage });
+}
+
+// Fetches the email + domain blacklist (the app's "EMAIL_AND_DOMAIN" tab).
+function getEmailBlacklist({ cookie, appBase, userId, accountId, onPage }) {
+  return getAppBlacklist({ cookie, appBase, userId, accountId, tab: 'email', onPage });
 }
 
 // Flattens Skylead's tree sequence into a linear list by following the step ordinal.
@@ -341,4 +352,4 @@ function detectCampaignFamily(steps) {
   return 'HYBRID';
 }
 
-module.exports = { getMe, getSeats, getCampaigns, getCampaignDetails, getLeadsForStep, getCampaignLeads, getBlacklists, getBlacklistKeywords, getLinkedinBlacklist, flattenSteps, mapStepType, detectCampaignFamily };
+module.exports = { getMe, getSeats, getCampaigns, getCampaignDetails, getLeadsForStep, getCampaignLeads, getBlacklists, getBlacklistKeywords, getLinkedinBlacklist, getEmailBlacklist, flattenSteps, mapStepType, detectCampaignFamily };

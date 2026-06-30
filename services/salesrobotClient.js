@@ -1,6 +1,7 @@
 const axios = require('axios');
 
-const BASE = 'https://app.boomtechinc.com/api';
+// const BASE = 'https://app.boomtechinc.com/api';
+const BASE = 'http://localhost:8080/api';
 
 // 250 req/min = one request every 240ms (safety margin under 300/min limit)
 const REQUEST_INTERVAL_MS = 240;
@@ -292,13 +293,14 @@ async function addLeadsDirectToCampaign(apiKey, linkedinAccountUuid, campaignUui
   );
 }
 
-// Adds company names / profile URLs to a LinkedIn account's blocklist.
-// The DTO is a delta: companyNames/profileUrls/emails are added, removedEmails removed.
-async function updateBlacklist(apiKey, linkedinAccountUuid, { companyNames = [], profileUrls = [], emails = [], removedEmails = [], tag = '' } = {}) {
+// Adds company names / profile URLs / emails / domains to a LinkedIn account's
+// blocklist. The DTO is a delta: companyNames/profileUrls/emails/domains are added,
+// removedEmails/removedDomains removed. The backend normalizes domain strings.
+async function updateBlacklist(apiKey, linkedinAccountUuid, { companyNames = [], profileUrls = [], emails = [], removedEmails = [], domains = [], removedDomains = [], tag = '' } = {}) {
   await req(() =>
     client(apiKey, { timeout: 120_000 }).post(
       `/blacklist/update?linkedinAccountUuid=${linkedinAccountUuid}`,
-      { tag, companyNames, profileUrls, emails, removedEmails }
+      { tag, companyNames, profileUrls, emails, removedEmails, domains, removedDomains }
     )
   );
 }
