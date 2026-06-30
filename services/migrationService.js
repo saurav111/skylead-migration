@@ -93,6 +93,13 @@ function linkedInMatchKey(url) {
   return m ? m[1] : '';
 }
 
+// A lead that has completed the whole Skylead sequence shows nextStep "Finished".
+// Such leads should be paused in Salesrobot so it doesn't resume the sequence.
+function isLeadFinished(lead) {
+  const ns = lead.nextStep ?? lead.nextStepName ?? '';
+  return typeof ns === 'string' && ns.trim().toLowerCase() === 'finished';
+}
+
 function resolveLeadIdentity(lead, allowEmailOnly) {
   const url = resolveLeadLinkedInUrl(lead);
   const email = resolveLeadEmail(lead);
@@ -423,7 +430,10 @@ async function migrateCampaign({
       // Match key for pausing: the basic /in/ member id (what Salesrobot stores),
       // NOT the Sales Navigator URL used as the import/dedupe identity.
       _matchKey: linkedInMatchKey(resolveBasicLinkedInUrl(lead)),
-      _paused: lead.active === false,
+      // Pause in Salesrobot if the lead was paused in Skylead (active === false)
+      // OR has finished the sequence (nextStep === 'Finished').
+      _finished: isLeadFinished(lead),
+      _paused: lead.active === false || isLeadFinished(lead),
     };
   }
 
@@ -683,22 +693,24 @@ async function migrateCampaign({
     }
   }
 
-  // --- Phase: Pause prospects that were paused in Skylead (lead.active === false) ---
+  // --- Phase: Pause prospects paused in Skylead (active === false) or finished ---
   // Match on the basic /in/ member id (what Salesrobot stores) and email, since the
   // import identity uses the Sales Navigator URL which Salesrobot does not echo back.
   const pausedByKey = new Map();
   let pausedLeadCount = 0;
+  let finishedLeadCount = 0;
   for (const { valid } of leadsByOrdinal.values()) {
     for (const lead of valid) {
       if (!lead._paused) continue;
       pausedLeadCount++;
+      if (lead._finished) finishedLeadCount++;
       if (lead._matchKey) pausedByKey.set(lead._matchKey, lead);
       if (lead._resolvedEmail) pausedByKey.set(`email:${lead._resolvedEmail.toLowerCase()}`, lead);
     }
   }
 
   if (pausedLeadCount > 0) {
-    emit('log', { message: `[pause-prospects] ${pausedLeadCount} prospect(s) paused in Skylead — locating them in Salesrobot...` });
+    emit('log', { message: `[pause-prospects] ${pausedLeadCount} prospect(s) to pause (${finishedLeadCount} finished, ${pausedLeadCount - finishedLeadCount} paused in Skylead) — locating them in Salesrobot...` });
 
     try {
       await sleep(3000); // let imported prospects register in the campaign
@@ -774,4 +786,4 @@ async function migrateCampaign({
   return result;
 }
 
-module.exports = { runMigration, resolveLeadLinkedInUrl, resolveBasicLinkedInUrl, resolveLeadEmail, linkedInMatchKey };
+module.exports = { runMigration, resolveLeadLinkedInUrl, resolveBasicLinkedInUrl, resolveLeadEmail, linkedInMatchKey, isLeadFinished };

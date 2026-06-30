@@ -18,7 +18,8 @@ export default function StepBlacklistProgress({ credentials, accountMappings, sk
   }, [logs]);
 
   function addLog(message, type = 'log') {
-    setLogs(prev => [...prev, { message, type, id: Date.now() + Math.random() }]);
+    const time = new Date().toLocaleTimeString();
+    setLogs(prev => [...prev, { message, type, time, id: Date.now() + Math.random() }]);
   }
 
   function handleEvent(event) {
@@ -107,7 +108,7 @@ export default function StepBlacklistProgress({ credentials, accountMappings, sk
       <div className="log-container" ref={logRef}>
         {logs.map(l => (
           <div key={l.id} className={`log-line ${l.type}`}>
-            {l.message}
+            <span className="log-time">{l.time}</span> {l.message}
           </div>
         ))}
         {!done && (

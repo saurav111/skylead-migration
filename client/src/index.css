@@ -243,6 +243,7 @@ select {
   margin-bottom: 20px;
 }
 .log-line { color: #d1fae5; margin-bottom: 4px; line-height: 1.5; }
+.log-time { color: #6b7280; margin-right: 6px; font-variant-numeric: tabular-nums; }
 .log-line.error { color: #fca5a5; }
 .log-line.campaign { color: #93c5fd; font-weight: 600; margin-top: 8px; }
 .log-line.done { color: #6ee7b7; }

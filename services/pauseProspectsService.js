@@ -1,6 +1,6 @@
 const { getCampaigns, getCampaignLeads } = require('./skyleadClient');
 const { getCampaignsList, getCampaignProspects, pauseProspects } = require('./salesrobotClient');
-const { resolveBasicLinkedInUrl, resolveLeadEmail, linkedInMatchKey } = require('./migrationService');
+const { resolveBasicLinkedInUrl, resolveLeadEmail, linkedInMatchKey, isLeadFinished } = require('./migrationService');
 
 function describeError(err) {
   const status = err.response?.status;
@@ -24,8 +24,8 @@ function srCampaignUuid(c) {
 }
 
 // For each mapped seat: scan every campaign's leads, keep the ones paused in Skylead
-// (active === false), then pause the matching prospects in every Salesrobot campaign
-// whose name matches the Skylead campaign name.
+// (active === false) or finished (nextStep === 'Finished'), then pause the matching
+// prospects in every Salesrobot campaign whose name matches the Skylead campaign name.
 async function runPauseProspects(config, emit) {
   const { skyLeadApiKey, skyLeadUserId, salesrobotApiKey, accountMappings } = config;
 
@@ -99,8 +99,11 @@ async function runPauseProspects(config, emit) {
         continue;
       }
 
-      const pausedLeads = leads.filter(l => l.active === false);
-      emit('log', { message: `"${campaign.name}": ${pausedLeads.length} paused lead(s) of ${leads.length}` });
+      // Pause leads that are paused in Skylead (active === false) OR have finished
+      // the sequence (nextStep === 'Finished').
+      const pausedLeads = leads.filter(l => l.active === false || isLeadFinished(l));
+      const finishedCount = pausedLeads.filter(l => isLeadFinished(l)).length;
+      emit('log', { message: `"${campaign.name}": ${pausedLeads.length} lead(s) to pause (${finishedCount} finished, ${pausedLeads.length - finishedCount} paused in Skylead) of ${leads.length}` });
       if (pausedLeads.length === 0) continue;
       summary.pausedLeadsFound += pausedLeads.length;
 
