@@ -20,11 +20,6 @@ export default function PausedProspectsTab({ credentials, seats, srAccounts }) {
     <>
       <Stepper current={step} steps={PAUSE_STEPS} />
 
-      {step === 0 && (
-        <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '12px 16px', marginBottom: 16, fontSize: 13, color: '#1e40af' }}>
-          <strong>Note:</strong> This is only required for older campaigns. Newer campaigns already handle pausing prospects automatically during import, so you don't need to run this for them.
-        </div>
-      )}
 
       {step === 0 && (
         <StepAccountMapping

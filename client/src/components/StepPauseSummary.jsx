@@ -33,6 +33,7 @@ export default function StepPauseSummary({ summary, onReset }) {
     prospectsPaused = 0,
     errors = [],
     pausedProspects = [],
+    queuedNotPausedProspects = [],
     campaignsNotFoundInSR = [],
   } = summary;
 
@@ -55,6 +56,28 @@ export default function StepPauseSummary({ summary, onReset }) {
             )} />
           )}
         </div>
+        {queuedNotPausedProspects.length > 0 && (
+          <div className="stat-card yellow" style={{ position: 'relative' }}>
+            <div className="num">{queuedNotPausedProspects.length}</div>
+            <div className="label">Queued but not paused</div>
+            <DownloadBtn
+              color="#d97706"
+              onClick={() => downloadCSV(
+                'queued-not-paused-prospects.csv',
+                [
+                  'Seat', 'Campaign', 'Reason', 'Prospect UUID', 'Salesrobot Status', 'Skylead Lead ID',
+                  'Finished in Skylead', 'Paused in Skylead', 'Profile URL', 'First Name', 'Last Name',
+                  'Full Name', 'Email', 'Company', 'LinkedIn URL (raw)',
+                ],
+                queuedNotPausedProspects.map(p => [
+                  p.seat || '', p.campaignName, p.reason, p.prospectUuid, p.salesrobotStatus, p.skyleadLeadId,
+                  p.finishedInSkylead, p.pausedInSkylead, p.profileUrl, p.firstName, p.lastName,
+                  p.fullName, p.email, p.company, p.linkedinUrl,
+                ])
+              )}
+            />
+          </div>
+        )}
         <div className="stat-card">
           <div className="num">{pausedLeadsFound}</div>
           <div className="label">Paused leads found in Skylead</div>
@@ -82,6 +105,12 @@ export default function StepPauseSummary({ summary, onReset }) {
           <div className="label">Accounts processed</div>
         </div>
       </div>
+
+      {queuedNotPausedProspects.length > 0 && (
+        <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '12px 16px', marginBottom: 16, fontSize: 13, color: '#1e40af' }}>
+          <strong>{queuedNotPausedProspects.length} prospect(s)</strong> were queued for pause but are not paused in Salesrobot. Reasons include <code>no_salesrobot_campaign</code>, <code>no_prospect_match</code>, and <code>pause_failed</code>.
+        </div>
+      )}
 
       {campaignsNotFoundInSR.length > 0 && (
         <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: '12px 16px', marginBottom: 16, fontSize: 13, color: '#92400e' }}>

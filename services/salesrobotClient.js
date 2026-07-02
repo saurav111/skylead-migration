@@ -5,14 +5,7 @@ const BASE = 'https://app.boomtechinc.com/api';
 
 // 250 req/min = one request every 240ms (safety margin under 300/min limit)
 const REQUEST_INTERVAL_MS = 240;
-let lastRequestTime = 0;
-
-async function throttle() {
-  const now = Date.now();
-  const wait = REQUEST_INTERVAL_MS - (now - lastRequestTime);
-  if (wait > 0) await sleep(wait);
-  lastRequestTime = Date.now();
-}
+let requestQueue = Promise.resolve();
 
 function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
@@ -34,16 +27,21 @@ function extractError(err) {
     : err.message;
 }
 
-async function req(fn) {
-  await throttle();
-  try {
-    return await fn();
-  } catch (err) {
-    const msg = extractError(err);
-    const enhanced = new Error(msg);
-    enhanced.response = err.response;
-    throw enhanced;
-  }
+function req(fn) {
+  const run = requestQueue.then(async () => {
+    try {
+      return await fn();
+    } catch (err) {
+      const msg = extractError(err);
+      const enhanced = new Error(msg);
+      enhanced.response = err.response;
+      throw enhanced;
+    } finally {
+      await sleep(REQUEST_INTERVAL_MS);
+    }
+  });
+  requestQueue = run.catch(() => {});
+  return run;
 }
 
 async function getLinkedinAccounts(apiKey) {

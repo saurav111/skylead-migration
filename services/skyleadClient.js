@@ -156,16 +156,7 @@ async function getCampaignLeads(apiKey, userId, accountId, campaignId, onLog) {
   let offset = 0;
   const limit = 10000;
 
-  // Logs to both the server console and (if provided) the UI log stream.
-  const log = (msg) => {
-    console.log(msg);
-    if (typeof onLog === 'function') onLog(msg);
-  };
-
-  log(`[leads] start — account ${accountId}, campaign ${campaignId}`);
-
   while (true) {
-    const t0 = Date.now();
     const resp = await withRetry(() =>
       client(apiKey).get(`/users/${userId}/accounts/${accountId}/campaigns/${campaignId}/leads`, {
         params: { limit, offset },
@@ -175,13 +166,14 @@ async function getCampaignLeads(apiKey, userId, accountId, campaignId, onLog) {
     const items = result?.items || [];
     all.push(...items);
     const total = result?.count ?? all.length;
-    log(`[leads] campaign ${campaignId}: page offset=${offset} → +${items.length} (total ${all.length}/${total}) in ${Date.now() - t0}ms`);
     if (all.length >= total || items.length < limit) break;
     offset += limit;
     // await sleep(250);
   }
 
-  log(`[leads] done — campaign ${campaignId}: ${all.length} lead(s)`);
+  if (typeof onLog === 'function') {
+    onLog(`Fetched ${all.length} campaign lead(s)`);
+  }
   return all;
 }
 

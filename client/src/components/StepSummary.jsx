@@ -34,13 +34,14 @@ function downloadDuplicateCSV(duplicateLeads) {
   );
 }
 
-function downloadPausedCSV(pausedProspects) {
+function downloadFinishedCSV(finishedLeads) {
   downloadCSV(
-    'paused-prospects.csv',
-    ['Campaign', 'Prospect UUID', 'Profile URL', 'First Name', 'Last Name', 'Full Name', 'Email', 'Company', 'LinkedIn URL (raw)'],
-    pausedProspects.map(p => [
-      p.campaignName, p.prospectUuid, p.profileUrl,
-      p.firstName, p.lastName, p.fullName, p.email, p.company, p.linkedinUrl,
+    'finished-leads.csv',
+    ['Campaign', 'Skylead Lead ID', 'Next Step', 'Profile URL', 'First Name', 'Last Name', 'Full Name', 'Email', 'Company', 'Occupation', 'LinkedIn URL (raw)', 'Profile Identifiers'],
+    finishedLeads.map(l => [
+      l.campaignName, l.skyleadLeadId, l.nextStep, l.profileUrl,
+      l.firstName, l.lastName, l.fullName, l.email, l.company, l.occupation,
+      l.linkedinUrl, l.profileIdentifiers,
     ]),
   );
 }
@@ -58,8 +59,7 @@ export default function StepSummary({ summary, onReset }) {
     skippedLeads = [],
     duplicateLeads = [],
     leadsSkippedDuplicate = 0,
-    prospectsPaused = 0,
-    pausedProspects = [],
+    finishedLeads = [],
     prospectsIdentifierType2 = 0,
   } = summary;
 
@@ -115,21 +115,25 @@ export default function StepSummary({ summary, onReset }) {
           <div className="num">{prospectsIdentifierType2}</div>
           <div className="label">Prospects with Sales Navigator identifier (type 2)</div>
         </div>
-        {prospectsPaused > 0 && (
+        {finishedLeads.length > 0 && (
           <div className="stat-card green" style={{ position: 'relative' }}>
-            <div className="num">{prospectsPaused}</div>
-            <div className="label">Prospects paused (paused in Skylead)</div>
-            {pausedProspects.length > 0 && (
-              <button
-                onClick={() => downloadPausedCSV(pausedProspects)}
-                style={{ marginTop: 10, fontSize: 12, padding: '4px 10px', cursor: 'pointer', border: '1px solid #16a34a', borderRadius: 6, background: 'transparent', color: '#16a34a', fontWeight: 600 }}
-              >
-                ↓ Download CSV
-              </button>
-            )}
+            <div className="num">{finishedLeads.length}</div>
+            <div className="label">Leads finished in Skylead</div>
+            <button
+              onClick={() => downloadFinishedCSV(finishedLeads)}
+              style={{ marginTop: 10, fontSize: 12, padding: '4px 10px', cursor: 'pointer', border: '1px solid #16a34a', borderRadius: 6, background: 'transparent', color: '#16a34a', fontWeight: 600 }}
+            >
+              ↓ Download CSV
+            </button>
           </div>
         )}
       </div>
+
+      {finishedLeads.length > 0 && (
+        <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '12px 16px', marginBottom: 16, fontSize: 13, color: '#1e40af' }}>
+          <strong>{finishedLeads.length} finished lead(s)</strong> were imported as prospects. Use the <strong>Paused Prospects</strong> tab to pause finished and paused-in-Skylead prospects in Salesrobot before starting campaigns.
+        </div>
+      )}
 
       {branchesDropped > 0 && (
         <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: '12px 16px', marginBottom: 16, fontSize: 13, color: '#92400e' }}>

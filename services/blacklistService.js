@@ -80,14 +80,12 @@ async function runBlacklistImport(config, emit) {
           appBase: appBaseUrl,
           userId: skyLeadUserId,
           accountId: skyLeadAccountId,
-          onPage: (fetched, total) => emit('log', { message: `  fetched ${fetched}/${total} LinkedIn blacklist entr(ies)...` }),
         }),
         getEmailBlacklist({
           cookie: skyleadCookie,
           appBase: appBaseUrl,
           userId: skyLeadUserId,
           accountId: skyLeadAccountId,
-          onPage: (fetched, total) => emit('log', { message: `  fetched ${fetched}/${total} email/domain blacklist entr(ies)...` }),
         }),
       ]);
       rows = [...linkedinRows, ...emailRows];
@@ -220,7 +218,7 @@ async function buildNameToUrlMap(apiKey, userId, accountId, emit, summary) {
   for (const campaign of campaigns) {
     let leads = [];
     try {
-      leads = await getCampaignLeads(apiKey, userId, accountId, campaign.id, (msg) => emit('log', { message: msg }));
+      leads = await getCampaignLeads(apiKey, userId, accountId, campaign.id);
     } catch (err) {
       emit('log', { message: `  WARNING: failed to fetch leads for campaign ${campaign.id} — ${err.message}` });
       continue;

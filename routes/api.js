@@ -6,6 +6,8 @@ const { runMigration } = require('../services/migrationService');
 const { runBlacklistImport } = require('../services/blacklistService');
 const { runPauseProspects } = require('../services/pauseProspectsService');
 
+let pauseRunInFlight = false;
+
 // POST /api/connect — validate both keys, auto-fetch userId + seats + SR accounts
 router.post('/connect', async (req, res) => {
   const { skyLeadApiKey, salesrobotApiKey } = req.body;
@@ -119,15 +121,13 @@ router.post('/migrate/stream', async (req, res) => {
 
   function emit(type, data = {}) {
     const isError = type === 'error' || type === 'campaign_error';
-    const logLine = data.message || data.name || type;
-    if (isError) console.error(`[migration] ${type}:`, logLine);
-    else console.log(`[migration] ${type}:`, logLine);
+    if (isError) console.error(`[migration] ${type}:`, data.message || data.name || type);
     res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
   }
 
   try {
     const summary = await runMigration(req.body, emit);
-    console.log('[migration] complete:', JSON.stringify(summary));
+    console.log(`[migration] complete: ${summary.campaignsCreated} campaign(s), ${summary.leadsImported} lead(s) imported`);
     emit('complete', { summary });
   } catch (err) {
     console.error('[migration] fatal:', err.message);
@@ -159,15 +159,13 @@ router.post('/blacklist/stream', async (req, res) => {
 
   function emit(type, data = {}) {
     const isError = type === 'error';
-    const logLine = data.message || data.seat || type;
-    if (isError) console.error(`[blacklist] ${type}:`, logLine);
-    else console.log(`[blacklist] ${type}:`, logLine);
+    if (isError) console.error(`[blacklist] ${type}:`, data.message || data.seat || type);
     res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
   }
 
   try {
     const summary = await runBlacklistImport(req.body, emit);
-    console.log('[blacklist] complete:', JSON.stringify(summary));
+    console.log(`[blacklist] complete: ${summary.accountsProcessed} seat(s) processed`);
     emit('complete', { summary });
   } catch (err) {
     console.error('[blacklist] fatal:', err.message);
@@ -186,6 +184,11 @@ router.post('/pause-prospects/stream', async (req, res) => {
     return res.status(400).json({ error: 'Incomplete pause-prospects config' });
   }
 
+  if (pauseRunInFlight) {
+    return res.status(409).json({ error: 'A pause-prospects run is already in progress' });
+  }
+  pauseRunInFlight = true;
+
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
@@ -196,20 +199,19 @@ router.post('/pause-prospects/stream', async (req, res) => {
 
   function emit(type, data = {}) {
     const isError = type === 'error';
-    const logLine = data.message || data.seat || data.name || type;
-    if (isError) console.error(`[pause-prospects] ${type}:`, logLine);
-    else console.log(`[pause-prospects] ${type}:`, logLine);
+    if (isError) console.error(`[pause-prospects] ${type}:`, data.message || data.seat || data.name || type);
     res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
   }
 
   try {
     const summary = await runPauseProspects(req.body, emit);
-    console.log('[pause-prospects] complete:', JSON.stringify(summary));
+    console.log(`[pause-prospects] complete: ${summary.prospectsPaused} prospect(s) paused`);
     emit('complete', { summary });
   } catch (err) {
     console.error('[pause-prospects] fatal:', err.message);
     emit('error', { message: err.message });
   } finally {
+    pauseRunInFlight = false;
     clearInterval(heartbeat);
     res.end();
   }

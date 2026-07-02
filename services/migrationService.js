@@ -3,6 +3,7 @@ const {
   getCampaigns,
   getCampaignDetails,
   getLeadsForStep,
+  getCampaignLeads,
   flattenSteps,
   mapStepType,
   detectCampaignFamily,
@@ -84,20 +85,261 @@ function resolveBasicLinkedInUrl(lead) {
   return (lead.linkedinUrl || '').trim();
 }
 
-// Extracts the canonical /in/ member id from a LinkedIn URL for cross-tool
-// matching (e.g. "https://www.linkedin.com/in/ACwAAA..." -> "acwaaa..."). Returns
-// '' for non-/in/ URLs (such as Sales Navigator /sales/people/ links).
-function linkedInMatchKey(url) {
-  if (!url || typeof url !== 'string') return '';
-  const m = url.trim().toLowerCase().match(/linkedin\.com\/in\/([^/?#]+)/);
-  return m ? m[1] : '';
+// Last path segment after splitting on "/" — used to compare Skylead identifiers
+// with Salesrobot uniqueLinkedinId / profileUrl values.
+function lastPathSegment(value) {
+  if (!value || typeof value !== 'string') return '';
+  const trimmed = value.trim().replace(/\/+$/, '');
+  const parts = trimmed.split('/').filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : '';
+}
+
+function normalizeIdentifierSegment(value) {
+  const segment = lastPathSegment(value) || (typeof value === 'string' ? value.trim() : '');
+  return segment ? segment.toLowerCase() : '';
+}
+
+// Skylead profileIdentifiers identityTypeId 2 — Sales Navigator member id.
+function resolveSkyleadType2Id(lead) {
+  const identifiers = lead.profileIdentifiers || [];
+  const navId = identifiers.find(p => p.identityTypeId === 2);
+  if (!navId?.identifier?.trim()) return '';
+  return normalizeIdentifierSegment(navId.identifier);
+}
+
+// Skylead profileIdentifiers identityTypeId 1 — basic LinkedIn /in/ member id.
+function resolveSkyleadType1Id(lead) {
+  const identifiers = lead.profileIdentifiers || [];
+  const basicId = identifiers.find(p => p.identityTypeId === 1);
+  if (!basicId?.identifier?.trim()) return '';
+  return normalizeIdentifierSegment(basicId.identifier);
+}
+
+// Reads the human-readable "next step" label from a Skylead lead (UI shows "Finished").
+function leadNextStepLabel(lead) {
+  const candidates = [
+    lead.nextStep,
+    lead.nextStepName,
+    lead.nextCampaignStep,
+    lead.nextStepLabel,
+    lead.allFieldsData?.nextStep,
+    lead.allFieldsData?.next_step,
+  ];
+  for (const c of candidates) {
+    if (c == null) continue;
+    if (typeof c === 'string') {
+      const s = c.trim();
+      if (s) return s;
+      continue;
+    }
+    if (typeof c === 'object') {
+      const inner = c.name ?? c.label ?? c.stepName ?? c.title ?? c.value ?? '';
+      if (typeof inner === 'string' && inner.trim()) return inner.trim();
+    }
+  }
+  return '';
 }
 
 // A lead that has completed the whole Skylead sequence shows nextStep "Finished".
 // Such leads should be paused in Salesrobot so it doesn't resume the sequence.
 function isLeadFinished(lead) {
-  const ns = lead.nextStep ?? lead.nextStepName ?? '';
-  return typeof ns === 'string' && ns.trim().toLowerCase() === 'finished';
+  if (lead.isFinished === true || lead.sequenceFinished === true) return true;
+  return leadNextStepLabel(lead).toLowerCase() === 'finished';
+}
+
+function buildPauseLeadRecord(lead, identity) {
+  return {
+    ...lead,
+    _resolvedUrl: identity.url,
+    _resolvedEmail: identity.email,
+    _emailOnly: identity.emailOnly,
+    _finished: isLeadFinished(lead),
+    _paused: lead.active === false || isLeadFinished(lead),
+  };
+}
+
+// Indexes Skylead leads by identifier type so Salesrobot prospects can be matched
+// with a fixed priority (uniqueLinkedinId → profileUrl → linkedinEmail).
+function addLeadToPauseRegistry(registry, lead) {
+  const type2 = resolveSkyleadType2Id(lead);
+  if (type2) registry.set(`type2:${type2}`, lead);
+
+  const type1 = resolveSkyleadType1Id(lead);
+  if (type1) registry.set(`type1:${type1}`, lead);
+
+  const email = (lead._resolvedEmail || resolveLeadEmail(lead) || '').trim().toLowerCase();
+  if (email) registry.set(`email:${email}`, lead);
+}
+
+function findLeadInPauseRegistry(registry, prospect) {
+  const uniqueLinkedinId = (prospect.uniqueLinkedinId || '').trim();
+  if (uniqueLinkedinId) {
+    const segment = normalizeIdentifierSegment(uniqueLinkedinId);
+    return segment ? (registry.get(`type2:${segment}`) || null) : null;
+  }
+
+  const profileUrl = (prospect.profileUrl || prospect.linkedinUrl || '').trim();
+  if (profileUrl) {
+    const segment = normalizeIdentifierSegment(profileUrl);
+    return segment ? (registry.get(`type1:${segment}`) || null) : null;
+  }
+
+  const email = (prospect.linkedinEmail || prospect.linkedinEmailId || prospect.emailId || prospect.email || '')
+    .trim()
+    .toLowerCase();
+  if (email) return registry.get(`email:${email}`) || null;
+
+  return null;
+}
+
+// Stable identity for deduping Skylead leads in the pause queue.
+function leadPauseDedupeKey(lead) {
+  const email = (lead._resolvedEmail || resolveLeadEmail(lead) || '').trim().toLowerCase();
+  if (email) return `email:${email}`;
+  const url = lead._resolvedUrl || resolveLeadLinkedInUrl(lead) || resolveBasicLinkedInUrl(lead) || lead.linkedinUrl;
+  if (url) return url.toLowerCase();
+  return '';
+}
+
+// Statuses that mean the prospect will not be contacted further in Salesrobot.
+const PAUSED_PROSPECT_STATUSES = new Set([
+  'STOPPED',
+  'PAUSED',
+  'COMPLETED',
+  'FINISHED',
+]);
+
+const PAUSE_VERIFY_BACKOFF_MS = [5000, 8000, 12000, 15000, 18000, 20000];
+const PAUSE_BATCH_SIZE = 100;
+
+function prospectUuid(prospect) {
+  return prospect.uuid || prospect.prospectUuid || '';
+}
+
+function prospectStatusLabel(prospect) {
+  const status = String(prospect.status || '').trim().toUpperCase();
+  return status || '(none)';
+}
+
+function isProspectStoppedInSalesrobot(prospect) {
+  const status = prospectStatusLabel(prospect);
+  return status !== '(none)' && PAUSED_PROSPECT_STATUSES.has(status);
+}
+
+function buildProspectMap(prospects) {
+  const map = new Map();
+  for (const p of prospects) {
+    const uuid = prospectUuid(p);
+    if (uuid) map.set(uuid, p);
+  }
+  return map;
+}
+
+function countMatchedProspectStatusDistribution(matchedByUuid, prospects) {
+  const counts = new Map();
+  for (const p of prospects) {
+    const uuid = prospectUuid(p);
+    if (!uuid || !matchedByUuid.has(uuid)) continue;
+    const label = prospectStatusLabel(p);
+    counts.set(label, (counts.get(label) || 0) + 1);
+  }
+  return counts;
+}
+
+function formatStatusDistribution(counts) {
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([status, count]) => `${status}: ${count}`)
+    .join(', ');
+}
+
+async function pauseProspectsInBatches(pauseFn, uuids, onBatchError) {
+  for (let i = 0; i < uuids.length; i += PAUSE_BATCH_SIZE) {
+    const batch = uuids.slice(i, i + PAUSE_BATCH_SIZE);
+    try {
+      await pauseFn(batch);
+    } catch (err) {
+      if (onBatchError) onBatchError(err, batch);
+    }
+  }
+}
+
+// Re-pauses remaining prospects with backoff until they reach a terminal/paused status
+// or no further progress is made.
+async function pauseAndVerify({
+  matchedByUuid,
+  pauseFn,
+  fetchFn,
+  emit,
+  logPrefix = '[pause-prospects]',
+  onBatchError,
+  maxAttempts = 6,
+}) {
+  const verifiedByUuid = new Map();
+  let remaining = new Set(matchedByUuid.keys());
+
+  for (let attempt = 0; attempt < maxAttempts && remaining.size > 0; attempt++) {
+    await pauseProspectsInBatches(pauseFn, [...remaining], onBatchError);
+
+    const backoff = PAUSE_VERIFY_BACKOFF_MS[Math.min(attempt, PAUSE_VERIFY_BACKOFF_MS.length - 1)];
+    if (backoff > 0) await sleep(backoff);
+
+    const prospectMap = buildProspectMap(await fetchFn());
+    const before = remaining.size;
+
+    for (const uuid of [...remaining]) {
+      const prospect = prospectMap.get(uuid);
+      if (prospect && isProspectStoppedInSalesrobot(prospect)) {
+        verifiedByUuid.set(uuid, prospect);
+        remaining.delete(uuid);
+      }
+    }
+
+    if (emit) {
+      const settled = before - remaining.size;
+      emit('log', {
+        message: `${logPrefix} Attempt ${attempt + 1}/${maxAttempts}: ${verifiedByUuid.size}/${matchedByUuid.size} paused (${remaining.size} remaining${settled > 0 ? `, +${settled} this round` : ''})`,
+      });
+    }
+
+    if (remaining.size === 0) break;
+    if (before - remaining.size === 0 && attempt > 0) break;
+  }
+
+  const afterProspects = await fetchFn();
+  if (emit) {
+    const dist = countMatchedProspectStatusDistribution(matchedByUuid, afterProspects);
+    emit('log', {
+      message: `${logPrefix} Status breakdown among matched: ${formatStatusDistribution(dist) || 'none'}`,
+    });
+  }
+
+  for (const p of afterProspects) {
+    const uuid = prospectUuid(p);
+    if (!uuid || !matchedByUuid.has(uuid)) continue;
+    if (isProspectStoppedInSalesrobot(p)) verifiedByUuid.set(uuid, p);
+  }
+
+  return { verifiedByUuid, remaining, finalProspectMap: buildProspectMap(afterProspects) };
+}
+
+function buildQueuedNotPausedProspectRow(campaignName, lead, { reason, prospect, prospectUuid } = {}) {
+  return {
+    campaignName,
+    reason,
+    prospectUuid: prospectUuid || '',
+    salesrobotStatus: prospect ? prospectStatusLabel(prospect) : '',
+    skyleadLeadId: lead.id || '',
+    finishedInSkylead: lead._finished ? 'yes' : 'no',
+    pausedInSkylead: lead.active === false ? 'yes' : 'no',
+    profileUrl: lead._resolvedUrl || resolveLeadLinkedInUrl(lead) || resolveBasicLinkedInUrl(lead) || lead.linkedinUrl || '',
+    firstName: lead.firstName || '',
+    lastName: lead.lastName || '',
+    fullName: lead.fullName || lead.allFieldsData?.full_name || '',
+    email: lead._resolvedEmail || resolveLeadEmail(lead) || '',
+    company: lead.company || lead.allFieldsData?.currentCompany || '',
+    linkedinUrl: lead.linkedinUrl || '',
+  };
 }
 
 function resolveLeadIdentity(lead, allowEmailOnly) {
@@ -146,6 +388,23 @@ function recordDuplicateLead(summary, campaignName, lead, profileUrl, stepOrdina
   });
 }
 
+function recordFinishedLead(summary, campaignName, lead) {
+  summary.finishedLeads.push({
+    campaignName,
+    skyleadLeadId: lead.id,
+    nextStep: leadNextStepLabel(lead),
+    firstName: lead.firstName || '',
+    lastName: lead.lastName || '',
+    fullName: lead.fullName || lead.allFieldsData?.full_name || '',
+    email: resolveLeadEmail(lead),
+    company: lead.company || lead.allFieldsData?.currentCompany || '',
+    occupation: lead.occupation || '',
+    profileUrl: resolveLeadLinkedInUrl(lead) || resolveBasicLinkedInUrl(lead) || lead.linkedinUrl || '',
+    linkedinUrl: lead.linkedinUrl || '',
+    profileIdentifiers: (lead.profileIdentifiers || []).map(p => p.identifier).join('; '),
+  });
+}
+
 const {
   createCampaign,
   updateCampaignConfig,
@@ -155,8 +414,6 @@ const {
   addRunnerAccounts,
   startCampaign,
   pauseCampaign,
-  getCampaignProspects,
-  pauseProspects,
   createLeadListFromCSV,
   addLeadListToCampaign,
   addLeadsDirectToCampaign,
@@ -176,7 +433,6 @@ async function runMigration(config, emit) {
   const summary = {
     campaignsCreated: 0,
     leadsImported: 0,
-    prospectsPaused: 0,
     leadsSkippedNoUrl: 0,
     leadsSkippedReplied: 0,
     branchesDropped: 0,
@@ -184,7 +440,7 @@ async function runMigration(config, emit) {
     skippedLeads: [], // leads with no resolvable LinkedIn URL or email (when email allowed)
     duplicateLeads: [], // leads skipped because profile URL already imported
     leadsSkippedDuplicate: 0,
-    pausedProspects: [], // prospects paused in Salesrobot (were paused in Skylead)
+    finishedLeads: [], // leads with nextStep = Finished in Skylead
     prospectsIdentifierType2: 0, // unique prospects having a type-2 (Sales Navigator) identifier
   };
 
@@ -253,8 +509,6 @@ async function migrateCampaign({
   const result = { created: false, aborted: false, phaseErrors: [] };
 
   // --- Phase: Fetch campaign details from Skylead ---
-  emit('log', { message: `[details] Fetching details for "${campaign.name}"...` });
-
   let details;
   try {
     details = await getCampaignDetails(
@@ -269,16 +523,13 @@ async function migrateCampaign({
   const { steps, branchesDropped, branchSteps } = flattenSteps(details.campaignSteps);
   summary.branchesDropped += branchesDropped;
 
-  // Log the full step tree with Skylead's internal lead counts
+  // Log step summary with Skylead's internal lead counts
   emit('log', { message: `[details] ${steps.length} main step(s), ${branchesDropped} branch edge(s) dropped, ${branchSteps.length} branch step(s)` });
   let skyLeadTotalInSteps = 0;
   for (const s of steps) {
     const leadsInStep = s.numberOfLeadsInStep ?? s.leadCount ?? '?';
     if (typeof leadsInStep === 'number') skyLeadTotalInSteps += leadsInStep;
-    const conditions = s.conditions ? JSON.stringify(s.conditions) : '';
-    emit('log', { message: `[details]   step ${s.step} (id=${s.id}) action=${s.action} leadsInStep=${leadsInStep}${conditions ? ` conditions=${conditions}` : ''}` });
   }
-  emit('log', { message: `[details] Sum of numberOfLeadsInStep across all steps: ${skyLeadTotalInSteps}` });
 
   if (steps.length === 0) {
     emit('log', { message: `"${campaign.name}" has no steps — creating empty campaign` });
@@ -294,9 +545,7 @@ async function migrateCampaign({
     return result;
   }
 
-  emit('log', { message: `[family] Creating as HYBRID campaign (hasEmailSteps=${hasEmailSteps}, hasEmailAccount=${hasEmailAccount})` });
-
-  // --- Build sequence step DTOs ---
+  emit('log', { message: `[create] Creating campaign "${campaign.name}" in Salesrobot...` });
   let emailThreadGroupId = null;
   let isFirstEmailStep = true;
 
@@ -330,8 +579,6 @@ async function migrateCampaign({
   });
 
   // --- Phase: Create campaign in Salesrobot ---
-  emit('log', { message: `[create] Creating HYBRID campaign "${campaign.name}" in Salesrobot...` });
-
   let srCampaignUuid;
   try {
     srCampaignUuid = await createCampaign(
@@ -346,12 +593,10 @@ async function migrateCampaign({
   }
 
   // --- Phase: Set campaign config (acceptedConnectionLevels = 1st,2nd,3rd) ---
-  emit('log', { message: `[config] Setting acceptedConnectionLevels to 1st,2nd,3rd...` });
   try {
     await updateCampaignConfig(
       salesrobotApiKey, salesrobotLinkedinAccountUuid, srCampaignUuid, campaign.name
     );
-    emit('log', { message: `[config] Campaign config updated OK` });
   } catch (err) {
     result.phaseErrors.push({ phase: 'update-config', message: `Failed to update campaign config: ${err.message}` });
     emit('log', { message: `[config] WARNING: Failed to update campaign config — ${err.message}. Continuing...` });
@@ -359,10 +604,8 @@ async function migrateCampaign({
 
   // --- Phase: Link email account ---
   if (hasEmailAccount) {
-    emit('log', { message: `[link-email] Linking email account ${salesrobotEmailAccountUuid} to campaign...` });
     try {
       await addRunnerAccounts(salesrobotApiKey, srCampaignUuid, [salesrobotEmailAccountUuid], []);
-      emit('log', { message: `[link-email] Email account linked OK` });
     } catch (err) {
       result.phaseErrors.push({ phase: 'link-email', message: `Failed to link email account: ${err.message}` });
       emit('log', { message: `[link-email] WARNING: Failed to link email account — ${err.message}. Email steps may not execute.` });
@@ -371,11 +614,8 @@ async function migrateCampaign({
 
   // --- Phase: Add sequence steps ---
   if (sequenceStepDTOList.length > 0) {
-    emit('log', { message: `[steps] Adding ${sequenceStepDTOList.length} sequence step(s)...` });
-    emit('log', { message: `[steps] Payload: ${JSON.stringify(sequenceStepDTOList)}` });
     try {
       await addSequenceSteps(salesrobotApiKey, salesrobotLinkedinAccountUuid, srCampaignUuid, sequenceStepDTOList);
-      emit('log', { message: `[steps] Sequence steps saved OK` });
     } catch (err) {
       result.phaseErrors.push({ phase: 'add-steps', message: `Failed to add sequence steps: ${err.message}` });
       emit('log', { message: `[steps] WARNING: Failed to add steps — ${err.message}. Continuing...` });
@@ -383,12 +623,7 @@ async function migrateCampaign({
   }
 
   // --- Phase: Fetch leads per step from Skylead using filterByCurrentStep ---
-  emit('log', { message: `[leads] Fetching leads for ${steps.length} step(s)...` });
-
   const allowEmailOnly = hasEmailAccount && hasEmailSteps;
-  if (allowEmailOnly) {
-    emit('log', { message: `[leads] Email account mapped — email-only leads allowed (no LinkedIn URL required)` });
-  }
 
   const seenKeys = new Set();
   const leadsByOrdinal = new Map();
@@ -422,19 +657,7 @@ async function migrateCampaign({
       summary.prospectsIdentifierType2++;
     }
 
-    return {
-      ...lead,
-      _resolvedUrl: identity.url,
-      _resolvedEmail: identity.email,
-      _emailOnly: identity.emailOnly,
-      // Match key for pausing: the basic /in/ member id (what Salesrobot stores),
-      // NOT the Sales Navigator URL used as the import/dedupe identity.
-      _matchKey: linkedInMatchKey(resolveBasicLinkedInUrl(lead)),
-      // Pause in Salesrobot if the lead was paused in Skylead (active === false)
-      // OR has finished the sequence (nextStep === 'Finished').
-      _finished: isLeadFinished(lead),
-      _paused: lead.active === false || isLeadFinished(lead),
-    };
+    return buildPauseLeadRecord(lead, identity);
   }
 
   // Skylead and Salesrobot share the same step semantics, and Salesrobot ordinals
@@ -446,7 +669,6 @@ async function migrateCampaign({
   for (const [idx, step] of steps.entries()) {
     const skyleadStep = idx + 1; // human-readable Skylead step number (for logs)
     const targetOrdinal = idx;
-    emit('log', { message: `[leads]   Fetching leads at Skylead step ${skyleadStep} (id ${step.id}) → placing at Salesrobot step ${targetOrdinal}...` });
 
     let leads;
     try {
@@ -457,16 +679,6 @@ async function migrateCampaign({
       result.phaseErrors.push({ phase: `fetch-leads-step-${skyleadStep}`, message: `Failed to fetch leads for step ${skyleadStep}: ${err.message}` });
       emit('log', { message: `[leads]   WARNING: Failed to fetch leads for step ${skyleadStep} — ${err.message}. Skipping step.` });
       continue;
-    }
-
-    emit('log', { message: `[leads]   Skylead step ${skyleadStep}: fetched ${leads.length} lead(s) from API` });
-
-    // Log sample lead on first step for debugging
-    if (idx === 0 && leads.length > 0) {
-      const sample = leads[0];
-      emit('log', { message: `[leads]   [debug] sample lead keys: ${Object.keys(sample).join(', ')}` });
-      emit('log', { message: `[leads]   [debug] sample linkedinUrl="${sample.linkedinUrl}"` });
-      emit('log', { message: `[leads]   [debug] sample profileIdentifiers=${JSON.stringify((sample.profileIdentifiers || []).slice(0, 3))}` });
     }
 
     let noIdentity = 0;
@@ -491,13 +703,7 @@ async function migrateCampaign({
       valid.push(result);
     }
 
-    emit('log', { message: `[leads]   Skylead step ${skyleadStep} → Salesrobot step ${targetOrdinal}: ${valid.length} valid, ${noIdentity} no identity, ${replied} replied skipped, ${dupes} duplicate(s)` });
     if (valid.length > 0) {
-      const sample = valid[0];
-      const sampleId = sample._emailOnly
-        ? `email=${sample._resolvedEmail}`
-        : `profileUrl=${sample._resolvedUrl}`;
-      emit('log', { message: `[leads]   [debug] sample ${sampleId}` });
       // Merge into the target bucket (branch steps below may target the same
       // ordinal), so don't overwrite an existing bucket.
       if (!leadsByOrdinal.has(targetOrdinal)) {
@@ -518,12 +724,9 @@ async function migrateCampaign({
   }
 
   if (branchSteps.length > 0) {
-    emit('log', { message: `[leads] Fetching leads from ${branchSteps.length} branch step(s)...` });
-
     for (const { branchStepId, parentStepId } of branchSteps) {
       const parentOrdinal = stepIdToOrdinal.get(parentStepId) || 0;
       const targetOrdinal = parentOrdinal;
-      emit('log', { message: `[leads]   Fetching leads at branch step ${branchStepId} (parent step ${parentOrdinal} → placing at step ${targetOrdinal})...` });
 
       let leads;
       try {
@@ -558,8 +761,6 @@ async function migrateCampaign({
         valid.push(result);
       }
 
-      emit('log', { message: `[leads]   Branch ${branchStepId} → step ${targetOrdinal}: fetched ${leads.length}, ${valid.length} valid (new), ${noIdentity} no identity, ${dupes} duplicate(s)` });
-
       if (valid.length > 0) {
         if (!leadsByOrdinal.has(targetOrdinal)) {
           leadsByOrdinal.set(targetOrdinal, { step: steps[targetOrdinal], valid: [] });
@@ -569,13 +770,60 @@ async function migrateCampaign({
     }
   }
 
+  // --- Fetch finished leads (nextStep = Finished) ---
+  // Finished leads are NOT returned by filterByCurrentStep for any campaign step id.
+  emit('log', { message: '[leads] Fetching finished leads (nextStep = Finished)...' });
+  let allCampaignLeads = [];
+  try {
+    allCampaignLeads = await getCampaignLeads(
+      skyLeadApiKey, skyLeadUserId, skyLeadAccountId, campaign.id
+    );
+  } catch (err) {
+    result.phaseErrors.push({ phase: 'fetch-finished-leads', message: `Failed to fetch all campaign leads: ${err.message}` });
+    emit('log', { message: `[leads]   WARNING: Failed to fetch all campaign leads — ${err.message}` });
+  }
+
+  const finishedLeads = allCampaignLeads.filter(isLeadFinished);
+  for (const lead of finishedLeads) {
+    recordFinishedLead(summary, campaign.name, lead);
+  }
+  emit('log', { message: `[leads]   ${finishedLeads.length} finished lead(s) of ${allCampaignLeads.length} total in campaign` });
+
+  const lastOrdinal = Math.max(0, steps.length - 1);
+  let finishedImported = 0;
+  let finishedDupes = 0;
+  for (const lead of finishedLeads) {
+    const identity = resolveLeadIdentity(lead, allowEmailOnly);
+    if (!identity) {
+      recordSkippedLead(summary, campaign.name, lead);
+      continue;
+    }
+    if (!includeReplied && lead.leadStatusId === 4) {
+      summary.leadsSkippedReplied++;
+      continue;
+    }
+
+    if (seenKeys.has(identity.dedupeKey)) {
+      finishedDupes++;
+      continue;
+    }
+
+    seenKeys.add(identity.dedupeKey);
+    const processed = buildPauseLeadRecord(lead, identity);
+    if (!leadsByOrdinal.has(lastOrdinal)) {
+      leadsByOrdinal.set(lastOrdinal, { step: steps[lastOrdinal], valid: [] });
+    }
+    leadsByOrdinal.get(lastOrdinal).valid.push(processed);
+    finishedImported++;
+  }
+  emit('log', { message: `[leads]   Finished: ${finishedImported} new import(s) at step ${lastOrdinal}, ${finishedDupes} already imported (skipped duplicate)` });
+
   const totalValid = [...leadsByOrdinal.values()].reduce((sum, e) => sum + e.valid.length, 0);
   const emailOnlyCount = [...leadsByOrdinal.values()].reduce(
     (sum, e) => sum + e.valid.filter(l => l._emailOnly).length,
     0
   );
   emit('log', { message: `[leads] Total: ${totalValid} unique valid lead(s) across ${leadsByOrdinal.size} step(s) (${emailOnlyCount} email-only)` });
-  emit('log', { message: `[leads] Skylead numberOfLeadsInStep sum: ${skyLeadTotalInSteps}, unique identities seen: ${seenKeys.size}, skipped no-identity: ${summary.leadsSkippedNoUrl}, skipped replied: ${summary.leadsSkippedReplied}` });
   if (skyLeadTotalInSteps > totalValid) {
     emit('log', { message: `[leads] ⚠ Gap: ${skyLeadTotalInSteps - totalValid} leads in Skylead step counts but not in migration (likely URL duplicates across steps or inactive leads not returned by API)` });
   }
@@ -586,13 +834,12 @@ async function migrateCampaign({
 
   if (seedEntry) {
     const seedLead = seedEntry.valid.slice(0, 1);
-    emit('log', { message: `[seed] Seeding 1 lead to enable start (from step ${seedEntry.step.step})...` });
+    emit('log', { message: `[seed] Seeding 1 lead to enable start...` });
     try {
       await addLeadsDirectToCampaign(
         salesrobotApiKey, salesrobotLinkedinAccountUuid, srCampaignUuid, seedLead
       );
       await sleep(3000);
-      emit('log', { message: `[seed] Seed complete.` });
     } catch (err) {
       result.phaseErrors.push({ phase: 'seed-lead', message: `Failed to seed lead: ${err.message}` });
       emit('log', { message: `[seed] WARNING: Failed to seed lead — ${err.message}. Start may fail.` });
@@ -606,8 +853,7 @@ async function migrateCampaign({
     s => s.sequenceStepType === 'SEND_CONNECTION_REQUEST' && s.multiVariateMails?.[0]?.body?.trim()
   );
 
-  emit('log', { message: `[start] Preparing to start campaign ${srCampaignUuid}` });
-  emit('log', { message: `[start] linkedinAccount=${salesrobotLinkedinAccountUuid}, hasInviteMessage=${hasInviteMessage}, steps=${sequenceStepDTOList.length}` });
+  emit('log', { message: `[start] Starting campaign...` });
 
   let startSucceeded = false;
 
@@ -615,10 +861,7 @@ async function migrateCampaign({
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const t0 = Date.now();
       try {
-        emit('log', { message: `[start] Attempt ${attempt}/${maxAttempts} — calling POST /start...` });
         await startCampaign(salesrobotApiKey, srCampaignUuid, salesrobotLinkedinAccountUuid, hasInviteMessage);
-        const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-        emit('log', { message: `[start] Success on attempt ${attempt} (${elapsed}s)` });
         return true;
       } catch (err) {
         const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
@@ -626,20 +869,13 @@ async function migrateCampaign({
         const isTimeout = err.code === 'ECONNABORTED' || err.message?.includes('timeout');
         const isRetryable = status === 504 || status === 502 || status === 503 || status === 429 || isTimeout;
         const reason = isTimeout ? 'timeout' : `HTTP ${status}`;
-        const body = err.response?.data
-          ? (typeof err.response.data === 'string' ? err.response.data : JSON.stringify(err.response.data))
-          : '(no body)';
-
-        emit('log', { message: `[start] Attempt ${attempt} failed after ${elapsed}s — ${reason}` });
-        emit('log', { message: `[start] Response body: ${body}` });
-        emit('log', { message: `[start] Error: ${err.message}` });
 
         if (isRetryable && attempt < maxAttempts) {
           const backoff = Math.min(10_000 * attempt, 60_000);
-          emit('log', { message: `[start] Retryable — waiting ${backoff / 1000}s before attempt ${attempt + 1}...` });
+          emit('log', { message: `[start] Attempt ${attempt} failed (${reason}, ${elapsed}s) — retrying in ${backoff / 1000}s...` });
           await sleep(backoff);
         } else {
-          emit('log', { message: `[start] Not retryable or max attempts reached — giving up` });
+          emit('log', { message: `[start] Failed after ${attempt} attempt(s) (${reason}): ${err.message}` });
           throw err;
         }
       }
@@ -656,11 +892,9 @@ async function migrateCampaign({
 
   // --- Phase: Pause campaign ---
   if (startSucceeded) {
-    emit('log', { message: `[pause] Pausing campaign...` });
     try {
       await pauseCampaign(salesrobotApiKey, srCampaignUuid, salesrobotLinkedinAccountUuid);
       await sleep(2000);
-      emit('log', { message: `[pause] Campaign paused OK` });
     } catch (err) {
       result.phaseErrors.push({ phase: 'pause-campaign', message: `Failed to pause campaign: ${err.message}` });
       emit('log', { message: `[pause] WARNING: Failed to pause — ${err.message}. Campaign may still be running!` });
@@ -674,16 +908,12 @@ async function migrateCampaign({
   // requires >= 1, and omitting it lands them at step 0).
   for (const [stepOrdinal, { step, valid }] of leadsByOrdinal) {
     const startingStepOrdinal = stepOrdinal === 0 ? undefined : stepOrdinal;
-    const ordinalLabel = startingStepOrdinal == null ? 'none' : startingStepOrdinal;
-    emit('log', { message: `[import] Importing ${valid.length} lead(s) at step ${stepOrdinal} (startingStepOrdinal=${ordinalLabel}) via lead list...` });
 
     try {
       const leadListName = `${campaign.name} - Step ${stepOrdinal}`;
       const leadListUuid = await createLeadListFromCSV(salesrobotApiKey, leadListName, valid);
-      emit('log', { message: `[import] Lead list created: ${leadListUuid}` });
 
       await addLeadListToCampaign(salesrobotApiKey, srCampaignUuid, leadListUuid, startingStepOrdinal);
-      emit('log', { message: `[import] Lead list attached at step ${stepOrdinal} (startingStepOrdinal=${ordinalLabel}) OK` });
 
       summary.leadsImported += valid.length;
       emit('leads_imported', { count: valid.length, step: stepOrdinal, campaignName: campaign.name });
@@ -693,97 +923,21 @@ async function migrateCampaign({
     }
   }
 
-  // --- Phase: Pause prospects paused in Skylead (active === false) or finished ---
-  // Match on the basic /in/ member id (what Salesrobot stores) and email, since the
-  // import identity uses the Sales Navigator URL which Salesrobot does not echo back.
-  const pausedByKey = new Map();
-  let pausedLeadCount = 0;
-  let finishedLeadCount = 0;
-  for (const { valid } of leadsByOrdinal.values()) {
-    for (const lead of valid) {
-      if (!lead._paused) continue;
-      pausedLeadCount++;
-      if (lead._finished) finishedLeadCount++;
-      if (lead._matchKey) pausedByKey.set(lead._matchKey, lead);
-      if (lead._resolvedEmail) pausedByKey.set(`email:${lead._resolvedEmail.toLowerCase()}`, lead);
-    }
-  }
-
-  if (pausedLeadCount > 0) {
-    emit('log', { message: `[pause-prospects] ${pausedLeadCount} prospect(s) to pause (${finishedLeadCount} finished, ${pausedLeadCount - finishedLeadCount} paused in Skylead) — locating them in Salesrobot...` });
-
-    try {
-      await sleep(3000); // let imported prospects register in the campaign
-
-      const prospects = await getCampaignProspects(
-        salesrobotApiKey, srCampaignUuid, salesrobotLinkedinAccountUuid
-      );
-      emit('log', { message: `[pause-prospects] Fetched ${prospects.length} prospect(s) from campaign` });
-
-      if (prospects.length > 0) {
-        emit('log', { message: `[pause-prospects] [debug] sample prospect keys: ${Object.keys(prospects[0]).join(', ')}` });
-      }
-
-      // Match Salesrobot prospects to paused Skylead leads, keeping both the
-      // prospect uuid (to pause) and a CSV row (recorded only once paused OK).
-      const matched = [];
-      for (const p of prospects) {
-        const uuid = p.uuid || p.prospectUuid;
-        if (!uuid) continue;
-
-        const urlKey = linkedInMatchKey(p.profileUrl || p.linkedinUrl || '');
-        const email = (p.linkedinEmailId || p.emailId || p.email || '').trim().toLowerCase();
-        const emailKey = email ? `email:${email}` : '';
-
-        const lead = (urlKey && pausedByKey.get(urlKey)) || (emailKey && pausedByKey.get(emailKey));
-        if (lead) {
-          matched.push({
-            uuid,
-            row: {
-              campaignName: campaign.name,
-              prospectUuid: uuid,
-              profileUrl: p.profileUrl || p.linkedinUrl || '',
-              firstName: lead.firstName || '',
-              lastName: lead.lastName || '',
-              fullName: lead.fullName || lead.allFieldsData?.full_name || '',
-              email: lead._resolvedEmail || resolveLeadEmail(lead) || '',
-              company: lead.company || lead.allFieldsData?.currentCompany || '',
-              linkedinUrl: lead.linkedinUrl || '',
-            },
-          });
-        }
-      }
-
-      emit('log', { message: `[pause-prospects] Matched ${matched.length}/${pausedLeadCount} paused prospect(s) to Salesrobot uuids` });
-
-      const BATCH_SIZE = 100;
-      let pausedCount = 0;
-      for (let i = 0; i < matched.length; i += BATCH_SIZE) {
-        const batch = matched.slice(i, i + BATCH_SIZE);
-        const uuids = batch.map(m => m.uuid);
-        try {
-          await pauseProspects(salesrobotApiKey, salesrobotLinkedinAccountUuid, srCampaignUuid, uuids);
-          pausedCount += uuids.length;
-          for (const m of batch) summary.pausedProspects.push(m.row);
-          emit('log', { message: `[pause-prospects] Paused ${pausedCount}/${matched.length} prospect(s)` });
-        } catch (err) {
-          result.phaseErrors.push({ phase: 'pause-prospects', message: `Failed to pause batch of ${uuids.length} prospect(s): ${err.message}` });
-          emit('log', { message: `[pause-prospects] WARNING: Failed to pause batch — ${err.message}. Continuing...` });
-        }
-      }
-
-      summary.prospectsPaused += pausedCount;
-
-      if (matched.length < pausedLeadCount) {
-        emit('log', { message: `[pause-prospects] ⚠ ${pausedLeadCount - matched.length} paused Skylead lead(s) had no matching Salesrobot prospect (e.g. Sales-Nav-only leads with no /in/ id, email-only leads, or not yet imported)` });
-      }
-    } catch (err) {
-      result.phaseErrors.push({ phase: 'pause-prospects', message: `Failed to pause prospects: ${err.message}` });
-      emit('log', { message: `[pause-prospects] WARNING: Failed to pause prospects — ${err.message}.` });
-    }
-  }
-
   return result;
 }
 
-module.exports = { runMigration, resolveLeadLinkedInUrl, resolveBasicLinkedInUrl, resolveLeadEmail, linkedInMatchKey, isLeadFinished };
+module.exports = {
+  runMigration,
+  resolveLeadLinkedInUrl,
+  resolveBasicLinkedInUrl,
+  resolveLeadEmail,
+  isLeadFinished,
+  leadNextStepLabel,
+  buildPauseLeadRecord,
+  addLeadToPauseRegistry,
+  findLeadInPauseRegistry,
+  leadPauseDedupeKey,
+  isProspectStoppedInSalesrobot,
+  buildQueuedNotPausedProspectRow,
+  pauseAndVerify,
+};

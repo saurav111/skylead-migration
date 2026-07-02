@@ -6,8 +6,11 @@ export default function StepPauseProgress({ credentials, accountMappings, onDone
   const [error, setError] = useState('');
   const logRef = useRef(null);
   const doneRef = useRef(false);
+  const startedRef = useRef(false);
 
   useEffect(() => {
+    if (startedRef.current) return;
+    startedRef.current = true;
     startRun();
   }, []);
 
